@@ -10,7 +10,8 @@
   "scripts": {
     "dev": "node --watch -r ts-node/register src/index.ts",
     "dev:no-watch": "ts-node src/index.ts",
-    "build": "tsc",
+    "build": "tsc && mkdir -p dist/data dist/schemas && cp -R src/data/. dist/data/ && cp -R src/schemas/. dist/schemas/",
+    "build:dist-smoke": "npm run build && node -e \"require('./dist/lib/contractErrors'); console.log('dist contractErrors smoke test ok');\"",
     "start": "node dist/index.js",
     "test": "jest",
     "test:coverage": "jest --coverage",

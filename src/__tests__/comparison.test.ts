@@ -1,7 +1,14 @@
 import request from "supertest";
 import express, { Express } from "express";
+import { projectExists } from "../lib/registry";
 import comparisonRouter from "../routes/comparison";
 import { errorHandler } from "../middleware/errors";
+
+jest.mock("../lib/registry", () => ({
+  projectExists: jest.fn(),
+}));
+
+const mockedProjectExists = projectExists as jest.MockedFunction<typeof projectExists>;
 
 function buildApp(): Express {
   const app = express();
@@ -16,6 +23,8 @@ describe("comparison routes", () => {
 
   beforeEach(() => {
     app = buildApp();
+    mockedProjectExists.mockReset();
+    mockedProjectExists.mockImplementation(async (id: number) => id >= 1 && id <= 3);
   });
 
   it("GET /api/comparison — compares projects side by side", async () => {
@@ -44,6 +53,13 @@ describe("comparison routes", () => {
     const ids = Array.from({ length: 21 }, (_, i) => i + 1).join(",");
     const res = await request(app).get(`/api/comparison?ids=${ids}`).expect(400);
     expect(res.body.error.code).toBe("bad_request");
+  });
+
+  it("GET /api/comparison — 404 for unknown project ids", async () => {
+    mockedProjectExists.mockImplementation(async (id: number) => id === 1 || id === 2);
+    const res = await request(app).get("/api/comparison?ids=1,9999").expect(404);
+    expect(res.body.error.code).toBe("not_found");
+    expect(res.body.error.message).toMatch(/9999/);
   });
 
   it("GET /api/comparison/metrics — returns available metrics", async () => {

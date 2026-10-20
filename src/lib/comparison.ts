@@ -1,6 +1,7 @@
 import { getSolarData, getSatelliteData } from "../routes/iot";
 import { computeScores } from "./scoring";
 import { getHistory } from "./history";
+import { projectExists } from "./registry";
 
 export interface ComparisonMetric {
   label: string;
@@ -68,13 +69,18 @@ function round(n: number): number {
   return Math.round(n * 100) / 100;
 }
 
-export function loadProjectMetrics(ids: number[]): ProjectMetrics[] {
-  return ids.map((id) => {
+export async function loadProjectMetrics(ids: number[]): Promise<ProjectMetrics[]> {
+  const results: ProjectMetrics[] = [];
+  for (const id of ids) {
+    const exists = await projectExists(id);
+    if (!exists) {
+      throw new Error(`Project ${id} not found`);
+    }
     const solar = getSolarData(id);
     const satellite = getSatelliteData(id);
     const scores = computeScores({ solar, satellite });
     const combined = scores.credit_quality + scores.green_impact;
-    return {
+    results.push({
       id,
       credit_quality: scores.credit_quality,
       green_impact: scores.green_impact,
@@ -83,12 +89,13 @@ export function loadProjectMetrics(ids: number[]): ProjectMetrics[] {
       forest_density_pct: satellite.forest_density_pct,
       ndvi_score: satellite.ndvi_score,
       combined_score: combined,
-    };
-  });
+    });
+  }
+  return results;
 }
 
-export function compareProjects(ids: number[]): ComparisonResult {
-  const projects = loadProjectMetrics(ids);
+export async function compareProjects(ids: number[]): Promise<ComparisonResult> {
+  const projects = await loadProjectMetrics(ids);
 
   if (projects.length === 0) {
     return {
@@ -122,12 +129,12 @@ export function compareProjects(ids: number[]): ComparisonResult {
   };
 }
 
-export function generateRanking(ids: number[], criteria: string): RankingResult {
+export async function generateRanking(ids: number[], criteria: string): Promise<RankingResult> {
   if (!VALID_CRITERIA.has(criteria)) {
     throw new Error(`Invalid ranking criteria "${criteria}". Valid options: ${Array.from(VALID_CRITERIA).join(", ")}`);
   }
 
-  const projects = loadProjectMetrics(ids);
+  const projects = await loadProjectMetrics(ids);
   const sorted = [...projects].sort((a, b) => {
     const aVal = a[criteria as keyof ProjectMetrics] as number;
     const bVal = b[criteria as keyof ProjectMetrics] as number;

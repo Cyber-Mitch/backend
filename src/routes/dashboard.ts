@@ -8,7 +8,8 @@ import {
   projectTimeSeries,
   summaryToCsv,
 } from "../lib/analytics";
-import { parseProjectId, parseOptionalInt } from "../middleware/errors";
+import { projectExists } from "../lib/registry";
+import { ApiError, parseProjectId, parseOptionalInt } from "../middleware/errors";
 
 const router = Router();
 
@@ -49,11 +50,18 @@ router.get("/distribution", async (req: Request, res: Response, next: NextFuncti
 });
 
 /** GET /dashboard/timeseries/:id?from=&to= — per-project score time-series. */
-router.get("/timeseries/:id", (req: Request, res: Response) => {
-  const id = parseProjectId(req.params.id, "project id");
-  const from = req.query.from !== undefined ? parseOptionalInt(req.query.from as string, "from", 0) : undefined;
-  const to = req.query.to !== undefined ? parseOptionalInt(req.query.to as string, "to", 0) : undefined;
-  res.json({ project_id: id, points: projectTimeSeries(id, from, to) });
+router.get("/timeseries/:id", async (req: Request, res: Response, next: NextFunction) => {
+  try {
+    const id = parseProjectId(req.params.id, "project id");
+    if (!(await projectExists(id))) {
+      return next(new ApiError(404, "not_found", `Project ${id} not found`));
+    }
+    const from = req.query.from !== undefined ? parseOptionalInt(req.query.from as string, "from", 0) : undefined;
+    const to = req.query.to !== undefined ? parseOptionalInt(req.query.to as string, "to", 0) : undefined;
+    res.json({ project_id: id, points: projectTimeSeries(id, from, to) });
+  } catch (error) {
+    next(error);
+  }
 });
 
 /** GET /dashboard/export — CSV export of current portfolio scores. */

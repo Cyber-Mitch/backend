@@ -28,6 +28,7 @@ let wss: WebSocketServer | null = null;
 const WS_MAX_CONNECTIONS = envInt("WS_MAX_CONNECTIONS", 1000);
 const WS_MAX_PER_IP = envInt("WS_MAX_PER_IP", 10);
 const WS_MAX_SUBSCRIPTIONS = envInt("WS_MAX_SUBSCRIPTIONS", 100);
+const WS_MAX_PAYLOAD_BYTES = envInt("WS_MAX_PAYLOAD_BYTES", 64 * 1024);
 const WS_MSG_RATE_LIMIT = envInt("WS_MSG_RATE_LIMIT", 30);
 const WS_MSG_RATE_WINDOW_MS = 60_000;
 
@@ -96,6 +97,21 @@ function sendError(ws: WebSocket, message: string): void {
 function handleMessage(ws: WebSocket, data: unknown): void {
   const state = clients.get(ws);
   if (!state) return;
+
+  const payloadLength =
+    typeof data === "string"
+      ? Buffer.byteLength(data, "utf8")
+      : Buffer.isBuffer(data)
+        ? data.length
+        : Buffer.byteLength(String(data), "utf8");
+  if (payloadLength > WS_MAX_PAYLOAD_BYTES) {
+    try {
+      ws.close(1009, "payload too large");
+    } catch {
+      // ignore close races
+    }
+    return;
+  }
 
   const rl = wsRateLimits.get(ws);
   if (rl) {
@@ -261,7 +277,7 @@ export function attachEventsWebSocketServer(server: HttpServer): WebSocketServer
 
   const maxPerIp = envInt("WS_EVENTS_MAX_PER_IP", WS_EVENTS_MAX_PER_IP_DEFAULT);
 
-  eventsWss = new WebSocketServer({ noServer: true });
+  eventsWss = new WebSocketServer({ noServer: true, maxPayload: WS_MAX_PAYLOAD_BYTES });
 
   eventsWss.on("connection", (ws, req) => {
     const ip = ipFromRequest(req);
@@ -362,7 +378,7 @@ export function _resetEventsServerForTests(): void {
  * can coexist without one server's registration clobbering the other's.
  */
 export function attachWebSocketServer(server: HttpServer): WebSocketServer {
-  wss = new WebSocketServer({ noServer: true });
+  wss = new WebSocketServer({ noServer: true, maxPayload: WS_MAX_PAYLOAD_BYTES });
 
   wss.on("connection", (ws, req) => {
     if (clients.size >= WS_MAX_CONNECTIONS) {
@@ -433,11 +449,11 @@ export function attachWebSocketServer(server: HttpServer): WebSocketServer {
   return wss;
 }
 
-import { scoreEvents, SCORE_UPDATE_EVENT } from "./events";
+import { emitScoreUpdate } from "./events";
 
 /** Push a score update to every connection subscribed to that project. */
 export function broadcastScoreUpdate(update: ScoreUpdate): void {
-  scoreEvents.emit(SCORE_UPDATE_EVENT, update);
+  emitScoreUpdate(update);
   if (!wss) return;
   const frame = encodeScoreUpdate(update);
   for (const [ws, state] of clients) {
