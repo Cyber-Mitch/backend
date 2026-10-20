@@ -330,35 +330,45 @@ router.post(
  * Query: project_id=<int>, from=<unix-ms>, to=<unix-ms>, format=json|csv
  * Returns the immutable audit log of all score updates.
  */
-router.get(
-  "/audit",
-  requireApiKeyRole("admin:read"),
-  (req: Request, res: Response, next: NextFunction) => {
-    try {
-      const project_id =
-        parseOptionalInt(queryValue(req.query.project_id), "project_id", 0) || undefined;
-      const from = parseOptionalInt(queryValue(req.query.from), "from", 0) || undefined;
-      const to = parseOptionalInt(queryValue(req.query.to), "to", 0) || undefined;
+router.get("/audit", (req: Request, res: Response, next: NextFunction) => {
+  try {
+    const project_id = parseOptionalInt(req.query.project_id as string | undefined, "project_id", 0) || undefined;
+    const from = parseOptionalInt(req.query.from as string | undefined, "from", 0) || undefined;
+    const to = parseOptionalInt(req.query.to as string | undefined, "to", 0) || undefined;
+    const limit = parseOptionalInt(req.query.limit as string | undefined, "limit", 50);
+    const offset = parseOptionalInt(req.query.offset as string | undefined, "offset", 0);
 
-      if (from && to && from > to) {
-        throw badRequest("from must be earlier than to");
-      }
-
-      const entries = getAuditLog({ project_id, from, to });
-      const format = req.query.format === "csv" ? "csv" : "json";
-
-      if (format === "csv") {
-        res.set("Content-Type", "text/csv");
-        res.set("Content-Disposition", 'attachment; filename="audit-log.csv"');
-        res.send(auditToCsv(entries));
-        return;
-      }
-
-      res.json({ count: entries.length, entries });
-    } catch (err) {
-      next(err);
+    if (from && to && from > to) {
+      throw badRequest("from must be earlier than to");
     }
-  },
-);
+    if (limit < 1 || limit > 500) {
+      throw badRequest("limit must be between 1 and 500");
+    }
+    if (offset < 0) {
+      throw badRequest("offset must be a non-negative integer");
+    }
+
+    const allEntries = getAuditLog({ project_id, from, to });
+    const entries = getAuditLog({ project_id, from, to, limit, offset });
+    const format = req.query.format === "csv" ? "csv" : "json";
+
+    if (format === "csv") {
+      res.set("Content-Type", "text/csv");
+      res.set("Content-Disposition", "attachment; filename=\"audit-log.csv\"");
+      res.send(auditToCsv(allEntries));
+      return;
+    }
+
+    res.json({
+      count: allEntries.length,
+      total: allEntries.length,
+      limit,
+      offset,
+      entries,
+    });
+  } catch (err) {
+    next(err);
+  }
+});
 
 export default router;
