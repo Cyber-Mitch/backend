@@ -20,7 +20,12 @@ describe("benchmarking routes", () => {
   });
 
   beforeEach(() => {
+    process.env.ADMIN_API_KEY = "test-admin-key";
     app = buildApp();
+  });
+
+  afterEach(() => {
+    delete process.env.ADMIN_API_KEY;
   });
 
   it("GET /api/benchmarking/benchmarks — lists all benchmarks", async () => {
@@ -44,13 +49,14 @@ describe("benchmarking routes", () => {
   it("GET /api/benchmarking/benchmarks/:id — 404 for unknown benchmark", async () => {
     const res = await request(app)
       .get("/api/benchmarking/benchmarks/nonexistent")
-      .expect(400);
-    expect(res.body.error).toBe("bad_request");
+      .expect(404);
+    expect(res.body.error).toBe("not_found");
   });
 
-  it("POST /api/benchmarking/benchmarks — creates a custom benchmark", async () => {
+  it("POST /api/benchmarking/benchmarks — creates a custom benchmark with admin auth", async () => {
     const res = await request(app)
       .post("/api/benchmarking/benchmarks")
+      .set("Authorization", "Bearer test-admin-key")
       .send({
         name: "Custom Test",
         metric: "credit_quality",
@@ -62,10 +68,50 @@ describe("benchmarking routes", () => {
     expect(res.body.name).toBe("Custom Test");
   });
 
+  it("POST /api/benchmarking/benchmarks — rejects non-admin callers", async () => {
+    const res = await request(app)
+      .post("/api/benchmarking/benchmarks")
+      .send({
+        name: "Custom Test",
+        metric: "credit_quality",
+        thresholds: { poor: 10, fair: 30, good: 50, excellent: 80 },
+      })
+      .expect(401);
+    expect(res.body.error).toBe("unauthorized");
+  });
+
   it("POST /api/benchmarking/benchmarks — 400 for missing fields", async () => {
     const res = await request(app)
       .post("/api/benchmarking/benchmarks")
+      .set("Authorization", "Bearer test-admin-key")
       .send({ name: "Incomplete" })
+      .expect(400);
+    expect(res.body.error).toBe("bad_request");
+  });
+
+  it("POST /api/benchmarking/benchmarks — 400 for invalid metric and threshold order", async () => {
+    const res = await request(app)
+      .post("/api/benchmarking/benchmarks")
+      .set("Authorization", "Bearer test-admin-key")
+      .send({
+        name: "Broken Benchmark",
+        metric: "unknown_metric",
+        thresholds: { poor: 80, fair: 70, good: 90, excellent: 95 },
+      })
+      .expect(400);
+    expect(res.body.error).toBe("bad_request");
+  });
+
+  it("POST /api/benchmarking/benchmarks — 400 when a built-in benchmark id is reused", async () => {
+    const res = await request(app)
+      .post("/api/benchmarking/benchmarks")
+      .set("Authorization", "Bearer test-admin-key")
+      .send({
+        id: "credit_quality",
+        name: "Duplicate Builtin",
+        metric: "credit_quality",
+        thresholds: { poor: 20, fair: 40, good: 60, excellent: 80 },
+      })
       .expect(400);
     expect(res.body.error).toBe("bad_request");
   });

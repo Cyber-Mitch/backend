@@ -199,13 +199,30 @@ app.get("/graphql-playground", (req, res) => {
     <html>
       <head>
         <title>GraphiQL</title>
-        <link href="https://unpkg.com/graphiql/graphiql.min.css" rel="stylesheet" />
+        <link
+          href="https://unpkg.com/graphiql@2.4.7/graphiql.min.css"
+          rel="stylesheet"
+          integrity="sha384-486GcFFVcFN0yj7LIp/vn7DVsuf2CTytJlNuqjHg0zF2g72zra2gWCNV2HBxJgC6"
+          crossorigin="anonymous"
+        />
       </head>
       <body style="margin: 0;">
         <div id="graphiql" style="height: 100vh;"></div>
-        <script crossorigin src="https://unpkg.com/react/umd/react.production.min.js"></script>
-        <script crossorigin src="https://unpkg.com/react-dom/umd/react-dom.production.min.js"></script>
-        <script crossorigin src="https://unpkg.com/graphiql/graphiql.min.js"></script>
+        <script
+          crossorigin="anonymous"
+          integrity="sha384-DGyLxAyjq0f9SPpVevD6IgztCFlnMF6oW/XQGmfe+IsZ8TqEiDrcHkMLKI6fiB/Z"
+          src="https://unpkg.com/react@18.3.1/umd/react.production.min.js"
+        ></script>
+        <script
+          crossorigin="anonymous"
+          integrity="sha384-gTGxhz21lVGYNMcdJOyq01Edg0jhn/c22nsx0kyqP0TxaV5WVdsSH1fSDUf5YJj1"
+          src="https://unpkg.com/react-dom@18.3.1/umd/react-dom.production.min.js"
+        ></script>
+        <script
+          crossorigin="anonymous"
+          integrity="sha384-8da92RVD56z/pbOOnJ4Ud5qlhqEzDtJI6qVZjN88SCbOatpo4xVDeP3T0nmfTf+9"
+          src="https://unpkg.com/graphiql@2.4.7/graphiql.min.js"
+        ></script>
         <script>
           const fetcher = GraphiQL.createFetcher({ url: '/graphql' });
           ReactDOM.render(

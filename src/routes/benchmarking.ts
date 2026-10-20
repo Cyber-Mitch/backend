@@ -1,6 +1,7 @@
 import { Router, Request, Response, NextFunction } from "express";
 import { parseProjectId } from "../middleware/errors";
 import { badRequest } from "../middleware/errors";
+import { apiKeyAuth } from "../middleware/apiKeyAuth";
 import {
   evaluateAllBenchmarks,
   evaluateProjectBenchmark,
@@ -15,27 +16,76 @@ import {
 
 const router = Router();
 
+const VALID_METRICS = [
+  "credit_quality",
+  "green_impact",
+  "combined_score",
+  "power_output_kw",
+  "efficiency_pct",
+  "forest_density_pct",
+  "ndvi_score",
+] as const;
+
+function requireAdminAccess(req: Request, res: Response, next: NextFunction): void {
+  const adminKey = process.env.ADMIN_API_KEY;
+  if (!adminKey) {
+    res.status(401).json({ error: "unauthorized", message: "Admin API key is not configured" });
+    return;
+  }
+
+  const authHeader = req.headers.authorization;
+  const providedKey = req.headers["x-api-key"];
+
+  const isAuthorized =
+    (typeof providedKey === "string" && providedKey === adminKey) ||
+    (typeof authHeader === "string" && authHeader === `Bearer ${adminKey}`);
+
+  if (!isAuthorized) {
+    res.status(401).json({ error: "unauthorized", message: "Admin access required" });
+    return;
+  }
+
+  next();
+}
+
 router.get("/benchmarks", (_req: Request, res: Response) => {
   res.json({ benchmarks: getBenchmarks() });
 });
 
-router.get("/benchmarks/:id", (req: Request, res: Response, next: NextFunction) => {
+router.get("/benchmarks/:id", (req: Request, res: Response) => {
   const id = req.params.id as string;
   const benchmark = getBenchmarkById(id);
-  if (!benchmark) return next(badRequest(`Benchmark "${id}" not found`));
+  if (!benchmark) {
+    return res.status(404).json({ error: "not_found", message: `Benchmark "${id}" not found` });
+  }
   res.json(benchmark);
 });
 
-router.post("/benchmarks", (req: Request, res: Response, next: NextFunction) => {
+router.post("/benchmarks", requireAdminAccess, (req: Request, res: Response, next: NextFunction) => {
   const { name, description, metric, thresholds, source, id } = req.body;
   if (!name || !metric || !thresholds) {
     return next(badRequest("name, metric, and thresholds are required"));
   }
+
+  if (!VALID_METRICS.includes(metric)) {
+    return next(badRequest(`metric must be one of: ${VALID_METRICS.join(", ")}`));
+  }
+
   const { poor, fair, good, excellent } = thresholds;
-  if ([poor, fair, good, excellent].some((v: number) => typeof v !== "number")) {
+  if ([poor, fair, good, excellent].some((v: number) => typeof v !== "number" || !Number.isFinite(v))) {
     return next(badRequest("thresholds must have numeric poor, fair, good, excellent values"));
   }
-  const benchmark = defineCustomBenchmark({ name, description, metric, thresholds, source, id });
+  if (poor > fair || fair > good || good > excellent) {
+    return next(badRequest("thresholds must be ordered poor <= fair <= good <= excellent"));
+  }
+
+  const requestedId = typeof id === "string" && id.trim().length > 0 ? id.trim() : undefined;
+  const benchmarkId = requestedId ?? String(name).trim().toLowerCase().replace(/\s+/g, "_");
+  if (getBenchmarkById(benchmarkId)) {
+    return next(badRequest(`Benchmark "${benchmarkId}" already exists`));
+  }
+
+  const benchmark = defineCustomBenchmark({ name, description, metric, thresholds, source, id: benchmarkId });
   res.status(201).json(benchmark);
 });
 
@@ -77,7 +127,9 @@ router.get("/:id/trend", (req: Request, res: Response, next: NextFunction) => {
     const benchmarkId = (req.query.benchmark as string) ?? "credit_quality";
 
     const benchmark = getBenchmarkById(benchmarkId);
-    if (!benchmark) return next(badRequest(`Benchmark "${benchmarkId}" not found`));
+    if (!benchmark) {
+      return res.status(404).json({ error: "not_found", message: `Benchmark "${benchmarkId}" not found` });
+    }
 
     const result = trendVsBenchmark(id, metric, benchmarkId);
     res.json(result);

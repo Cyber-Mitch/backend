@@ -8,8 +8,17 @@ export interface AuditEntry {
   timestamp: number;
 }
 
+export const MAX_AUDIT_LOG_ENTRIES = Number(process.env.AUDIT_LOG_MAX_ENTRIES ?? 2000);
+
 let seq = 0;
 const store: AuditEntry[] = [];
+
+function trimStore(): void {
+  const maxEntries = Number.isFinite(MAX_AUDIT_LOG_ENTRIES) ? MAX_AUDIT_LOG_ENTRIES : 2000;
+  if (store.length <= maxEntries) return;
+  const overflow = store.length - maxEntries;
+  store.splice(0, overflow);
+}
 
 export function recordAudit(
   entry: Omit<AuditEntry, "id" | "timestamp"> & { timestamp?: number },
@@ -24,20 +33,31 @@ export function recordAudit(
     triggered_by: entry.triggered_by,
   };
   store.push(record);
+  trimStore();
   return record;
 }
 
-export function getAuditLog(opts: {
-  project_id?: number;
-  from?: number;
-  to?: number;
-} = {}): AuditEntry[] {
-  return store.filter((e) => {
+export function getAuditLog(
+  opts: {
+    project_id?: number;
+    from?: number;
+    to?: number;
+    limit?: number;
+    offset?: number;
+  } = {},
+): AuditEntry[] {
+  const filtered = store.filter((e) => {
     if (opts.project_id !== undefined && e.project_id !== opts.project_id) return false;
     if (opts.from !== undefined && e.timestamp < opts.from) return false;
     if (opts.to !== undefined && e.timestamp > opts.to) return false;
     return true;
   });
+
+  if (opts.limit === undefined && opts.offset === undefined) return filtered;
+
+  const offset = Math.max(opts.offset ?? 0, 0);
+  const limit = opts.limit === undefined ? filtered.length : Math.max(opts.limit, 0);
+  return filtered.slice(offset, offset + limit);
 }
 
 export function auditToCsv(entries: AuditEntry[]): string {
