@@ -5,6 +5,8 @@ import * as satelliteSources from "../lib/satellite-sources";
 import * as scoring from "../lib/scoring";
 import * as registry from "../lib/registry";
 import { resetIdempotencyState, updateScoreForProject } from "../lib/scoreService";
+import { checkIdempotency, getIdempotencyStoreSize } from "../lib/idempotency";
+import { config } from "../config";
 
 describe("idempotency key behavior", () => {
   beforeEach(() => {
@@ -45,11 +47,7 @@ describe("idempotency key behavior", () => {
     }
   });
 
-  it("allows a submission after the TTL expires", async () => {
-    jest
-      .spyOn(Date, "now")
-      .mockReturnValueOnce(1_000)
-      .mockReturnValueOnce(1_000 + 60_001);
+  it("allows a submission in the next clock-hour (hourSeed rotates the key)", async () => {
     const nowSpy = jest.spyOn(Date, "now");
 
     // First invocation: fix time at hour 0
@@ -62,6 +60,54 @@ describe("idempotency key behavior", () => {
 
     expect(first.status).toBe("success");
     expect(second.status).toBe("success");
+  });
+
+  describe("IDEMPOTENCY_TTL_MS expiry for a fixed key", () => {
+    const key = "score:42:0";
+    const ttl = config.IDEMPOTENCY_TTL_MS;
+    const t0 = 1_000_000;
+
+    it("still rejects the key exactly at the TTL boundary", () => {
+      const nowSpy = jest.spyOn(Date, "now");
+
+      nowSpy.mockReturnValue(t0);
+      expect(checkIdempotency(key)).toEqual({ isDuplicate: false });
+
+      nowSpy.mockReturnValue(t0 + ttl);
+      expect(checkIdempotency(key)).toEqual({ isDuplicate: true, recordedAt: t0 });
+    });
+
+    it("accepts the same key once the TTL has elapsed", () => {
+      const nowSpy = jest.spyOn(Date, "now");
+
+      nowSpy.mockReturnValue(t0);
+      expect(checkIdempotency(key).isDuplicate).toBe(false);
+
+      nowSpy.mockReturnValue(t0 + ttl + 1);
+      expect(checkIdempotency(key)).toEqual({ isDuplicate: false });
+
+      // The re-recorded key is live again from the new timestamp.
+      expect(checkIdempotency(key)).toEqual({ isDuplicate: true, recordedAt: t0 + ttl + 1 });
+    });
+
+    it("sweeps only expired keys and keeps live ones", () => {
+      const nowSpy = jest.spyOn(Date, "now");
+      const liveKey = "score:43:0";
+
+      nowSpy.mockReturnValue(t0);
+      checkIdempotency(key);
+      nowSpy.mockReturnValue(t0 + Math.floor(ttl / 2));
+      checkIdempotency(liveKey);
+      expect(getIdempotencyStoreSize()).toBe(2);
+
+      // `key` has expired; `liveKey` is still within its window.
+      nowSpy.mockReturnValue(t0 + ttl + 1);
+      expect(checkIdempotency(liveKey)).toEqual({
+        isDuplicate: true,
+        recordedAt: t0 + Math.floor(ttl / 2),
+      });
+      expect(getIdempotencyStoreSize()).toBe(1);
+    });
   });
 
   it("releases idempotency key when submission defers due to RpcDegradedError (#830)", async () => {

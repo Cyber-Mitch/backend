@@ -71,9 +71,65 @@ describe("CircuitBreaker", () => {
     );
   });
 
-  it("uses configurable threshold from CIRCUIT_BREAKER_THRESHOLD env var", () => {
-    const breaker = new CircuitBreaker({ failureThreshold: 10 });
-    expect(breaker.getMetrics().state).toBe("CLOSED");
+  describe("CIRCUIT_BREAKER_THRESHOLD env var", () => {
+    const originalEnv = { ...process.env };
+
+    afterEach(() => {
+      process.env = { ...originalEnv };
+      jest.resetModules();
+    });
+
+    /** Re-evaluate config against the current process.env. */
+    async function loadConfig() {
+      jest.resetModules();
+      return (await import("../config")).config;
+    }
+
+    /** Fail until the breaker opens; returns how many failures it took. */
+    async function failuresUntilOpen(breaker: CircuitBreaker, limit = 20): Promise<number> {
+      const failingCall = jest.fn().mockRejectedValue(new Error("boom"));
+      for (let i = 1; i <= limit; i++) {
+        await expect(breaker.execute(failingCall)).rejects.toThrow("boom");
+        if (breaker.getState() === "OPEN") return i;
+      }
+      throw new Error(`breaker still ${breaker.getState()} after ${limit} failures`);
+    }
+
+    it("maps the env var onto the effective failure threshold", async () => {
+      process.env.CIRCUIT_BREAKER_THRESHOLD = "3";
+      delete process.env.RPC_BREAKER_FAILURE_THRESHOLD;
+
+      const config = await loadConfig();
+      expect(config.RPC_BREAKER_FAILURE_THRESHOLD).toBe(3);
+
+      const breaker = new CircuitBreaker({
+        failureThreshold: config.RPC_BREAKER_FAILURE_THRESHOLD,
+        recoveryTimeoutMs: config.RPC_BREAKER_RECOVERY_TIMEOUT_MS,
+      });
+      expect(await failuresUntilOpen(breaker)).toBe(3);
+    });
+
+    it("takes precedence over RPC_BREAKER_FAILURE_THRESHOLD", async () => {
+      process.env.CIRCUIT_BREAKER_THRESHOLD = "2";
+      process.env.RPC_BREAKER_FAILURE_THRESHOLD = "7";
+
+      const config = await loadConfig();
+      const breaker = new CircuitBreaker({
+        failureThreshold: config.RPC_BREAKER_FAILURE_THRESHOLD,
+      });
+      expect(await failuresUntilOpen(breaker)).toBe(2);
+    });
+
+    it("falls back to the default of 5 when neither var is set", async () => {
+      delete process.env.CIRCUIT_BREAKER_THRESHOLD;
+      delete process.env.RPC_BREAKER_FAILURE_THRESHOLD;
+
+      const config = await loadConfig();
+      const breaker = new CircuitBreaker({
+        failureThreshold: config.RPC_BREAKER_FAILURE_THRESHOLD,
+      });
+      expect(await failuresUntilOpen(breaker)).toBe(5);
+    });
   });
 
   it("closes the circuit after a successful request", async () => {
