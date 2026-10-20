@@ -1,5 +1,7 @@
 import { Request, Response, NextFunction } from "express";
 import { logger } from "../lib/logger";
+import { config } from "../config";
+import { errorBody } from "./errors";
 
 interface CidrRange {
   network: string;
@@ -56,8 +58,8 @@ let allowedIPs: CidrRange[] = [];
 let bypassPrivateNetworks = true;
 
 function reloadConfig(): void {
-  allowedIPs = parseIPList(process.env.ADMIN_IP_WHITELIST);
-  bypassPrivateNetworks = process.env.ADMIN_IP_WHITELIST_BYPASS_PRIVATE !== "false";
+  allowedIPs = parseIPList(config.ADMIN_IP_WHITELIST);
+  bypassPrivateNetworks = config.ADMIN_IP_WHITELIST_BYPASS_PRIVATE !== "false";
 }
 
 reloadConfig();
@@ -71,13 +73,11 @@ export function ipWhitelist(req: Request, res: Response, next: NextFunction): vo
     return next();
   }
 
-  const clientIP =
-    (req.headers["x-forwarded-for"] as string)?.split(",")[0]?.trim() ||
-    req.headers["x-real-ip"] as string ||
-    req.socket.remoteAddress ||
-    "";
-
-  const normalizedIP = clientIP.replace(/^::ffff:/, "");
+  // Use Express's built-in req.ip which respects the app-level "trust proxy"
+  // setting.  When trust proxy is configured, Express strips one hop from
+  // X-Forwarded-For per proxy layer, giving us the *real* client IP rather
+  // than an attacker-controlled header value.
+  const normalizedIP = (req.ip || "").replace(/^::ffff:/, "");
 
   if (bypassPrivateNetworks && isPrivateIP(normalizedIP)) {
     return next();
@@ -100,8 +100,7 @@ export function ipWhitelist(req: Request, res: Response, next: NextFunction): vo
     method: req.method,
   });
 
-  res.status(403).json({
-    error: "forbidden",
-    message: "Your IP address is not authorized to access admin endpoints",
-  });
+  res
+    .status(403)
+    .json(errorBody("forbidden", "Your IP address is not authorized to access admin endpoints"));
 }

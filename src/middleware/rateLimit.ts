@@ -20,6 +20,22 @@ function intFromEnv(name: string, fallback: number): number {
   return Number.isFinite(value) && value > 0 ? value : fallback;
 }
 
+/**
+ * Parse TRUST_PROXY env configuration for Express trust proxy setting.
+ * Supports:
+ * - "false" / undefined / empty -> false (no proxy)
+ * - "true" -> true (trust all proxies)
+ * - Integer number N -> N hops
+ * - IP/CIDR/subnet string -> passed directly to Express/proxy-addr
+ */
+export function parseTrustProxy(value: string | undefined): boolean | number | string {
+  if (!value || value === "false") return false;
+  if (value === "true") return true;
+  const num = Number(value);
+  if (!Number.isNaN(num) && Number.isInteger(num) && num >= 0) return num;
+  return value;
+}
+
 export function createRateLimiter(windowMs: number, max: number): RateLimitRequestHandler {
   return rateLimit({
     windowMs,
@@ -39,9 +55,14 @@ const PUBLIC_WINDOW_MS = intFromEnv("RATE_LIMIT_WINDOW_MS", 60_000);
 const PUBLIC_MAX = intFromEnv("RATE_LIMIT_MAX", 100);
 const ADMIN_WINDOW_MS = intFromEnv("RATE_LIMIT_ADMIN_WINDOW_MS", PUBLIC_WINDOW_MS);
 const ADMIN_MAX = intFromEnv("RATE_LIMIT_ADMIN_MAX", 20);
+const TELEMETRY_WINDOW_MS = intFromEnv("TELEMETRY_RATE_LIMIT_WINDOW_MS", PUBLIC_WINDOW_MS);
+const TELEMETRY_MAX = intFromEnv("TELEMETRY_RATE_LIMIT_MAX", 120);
 
 /** Limiter for public, unauthenticated endpoints. */
 export const publicLimiter = createRateLimiter(PUBLIC_WINDOW_MS, PUBLIC_MAX);
 
 /** Stricter limiter for privileged admin endpoints. */
 export const adminLimiter = createRateLimiter(ADMIN_WINDOW_MS, ADMIN_MAX);
+
+/** Per-IP limiter for browser beacon traffic on `POST /v1/telemetry`. */
+export const telemetryLimiter = createRateLimiter(TELEMETRY_WINDOW_MS, TELEMETRY_MAX);

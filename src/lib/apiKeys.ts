@@ -1,4 +1,5 @@
 import crypto from "crypto";
+import { timingSafeCompare } from "./timing-safe";
 
 export interface ApiKey {
   id: string;
@@ -128,19 +129,61 @@ export function validateApiKey(key: string): ApiKey | null {
   for (const apiKey of keysStore.values()) {
     if (apiKey.status !== "active") continue;
 
-    // Check current key
-    if (apiKey.key === key) {
+    // Check current key (constant-time comparison to prevent timing attacks)
+    if (timingSafeCompare(apiKey.key, key)) {
       return apiKey;
     }
 
-    // Check old key during grace period
+    // Check old key during grace period (constant-time comparison to prevent timing attacks)
     if (apiKey.old_key && apiKey.new_key_expires_at && now < apiKey.new_key_expires_at) {
-      if (apiKey.old_key === key) {
+      if (timingSafeCompare(apiKey.old_key, key)) {
         return apiKey;
       }
     }
   }
   return null;
+}
+
+export function resolveAuthContext(headers: any): {
+  providedKey: string;
+  isAdmin: boolean;
+  isConsumer: boolean;
+  consumerName: string;
+  keyRecord: ApiKey | null;
+  rateLimited: boolean;
+} {
+  const authHeader = headers.authorization;
+  const apiKeyHeader = headers["x-api-key"];
+  let providedKey = "";
+
+  if (apiKeyHeader && typeof apiKeyHeader === "string") {
+    providedKey = apiKeyHeader;
+  } else if (authHeader && typeof authHeader === "string" && authHeader.startsWith("Bearer ")) {
+    providedKey = authHeader.substring(7);
+  }
+
+  let isAdmin = false;
+  let isConsumer = false;
+  let consumerName = "";
+  let keyRecord: ApiKey | null = null;
+  let rateLimited = false;
+
+  const adminKey = process.env.ADMIN_API_KEY;
+  if (adminKey && timingSafeCompare(providedKey, adminKey)) {
+    isAdmin = true;
+  } else if (providedKey) {
+    keyRecord = validateApiKey(providedKey);
+    if (keyRecord) {
+      if (isRateLimited(keyRecord.id, keyRecord.rate_limit)) {
+        rateLimited = true;
+      } else {
+        isConsumer = true;
+        consumerName = keyRecord.consumer_name;
+      }
+    }
+  }
+
+  return { providedKey, isAdmin, isConsumer, consumerName, keyRecord, rateLimited };
 }
 
 export function incrementUsage(id: string): void {

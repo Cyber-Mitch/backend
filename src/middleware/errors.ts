@@ -36,27 +36,58 @@ export function badRequest(message: string): ApiError {
   return new ApiError(400, "bad_request", message);
 }
 
+/** Hard upper bound on project ids, used when MAX_PROJECT_ID is unset or invalid. */
 export const MAX_PROJECT_ID = 100_000;
+export const DEFAULT_MAX_PROJECT_ID = MAX_PROJECT_ID;
 
+/**
+ * Largest id the registry contract can represent for a project (`u32`).
+ *
+ * Routes that delegate existence to the registry (#768) validate against this
+ * instead of the deployment's synthetic `MAX_PROJECT_ID`, so an unknown id in
+ * that former range resolves to a real `404` rather than a `400`.
+ */
+export const MAX_U32_PROJECT_ID = 0xffffffff;
+
+/**
+ * Upper bound on project ids. `MAX_PROJECT_ID` can be raised/lowered per
+ * deployment; anything unset, non-integer or below 1 falls back to the default.
+ */
 export function maxProjectId(): number {
-  return MAX_PROJECT_ID;
+  const raw = process.env.MAX_PROJECT_ID;
+  if (raw === undefined || raw === "") return DEFAULT_MAX_PROJECT_ID;
+  const parsed = Number(raw);
+  return Number.isInteger(parsed) && parsed >= 1 ? parsed : DEFAULT_MAX_PROJECT_ID;
+}
+
+export interface ParseProjectIdOptions {
+  /**
+   * Override the deployment's `MAX_PROJECT_ID` upper bound. Pass `null` to
+   * disable it entirely (callers then delegate existence to the registry).
+   */
+  max?: number | null;
 }
 
 /**
  * Parse and validate a `:id` style path/route param as a positive integer.
  * Throws `ApiError` (400) on anything that isn't a whole number >= 1 and within allowed range.
  */
-export function parseProjectId(raw: string | string[] | undefined, field = "id"): number {
+export function parseProjectId(
+  raw: string | string[] | undefined,
+  field = "id",
+  options: ParseProjectIdOptions = {},
+): number {
   const value = Array.isArray(raw) ? raw[0] : raw;
   if (value === undefined || value === "" || !/^\d+$/.test(value)) {
     throw badRequest(`${field} must be a positive integer`);
   }
   const id = Number(value);
-  if (!Number.isInteger(id) || id < 1) {
+  if (!Number.isSafeInteger(id) || id < 1) {
     throw badRequest(`${field} must be a positive integer`);
   }
-  if (id > MAX_PROJECT_ID) {
-    throw badRequest(`${field} must be a positive integer not exceeding ${MAX_PROJECT_ID}`);
+  const limit = options.max === undefined ? maxProjectId() : options.max;
+  if (limit !== null && id > limit) {
+    throw badRequest(`${field} must be a positive integer not exceeding ${limit}`);
   }
   return id;
 }

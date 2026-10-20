@@ -1,11 +1,16 @@
 import request from "supertest";
+import type { Response } from "supertest";
 import express, { Express } from "express";
 import batchRouter from "../routes/batch";
 import { errorHandler } from "../middleware/errors";
 import * as registry from "../lib/registry";
 import * as iot from "../routes/iot";
 import * as scoring from "../lib/scoring";
+import { createJob, runJob } from "../lib/batch";
 
+jest.mock("../config", () => ({
+  config: { PROJECT_REGISTRY_CONTRACT_ID: "dummy-registry-id" },
+}));
 jest.mock("../lib/registry");
 jest.mock("../routes/iot");
 jest.mock("../lib/scoring");
@@ -79,7 +84,7 @@ describe("batch routes", () => {
 
     const batchId = create.body.batch_id;
 
-    let statusResponse: Awaited<ReturnType<typeof request>> | undefined;
+    let statusResponse: Response | undefined;
     for (let attempt = 0; attempt < 25; attempt++) {
       statusResponse = await request(app).get(`/api/admin/batch/${batchId}/status`);
       if (statusResponse.status === 200 && statusResponse.body.progress?.total === 1) {
@@ -92,5 +97,75 @@ describe("batch routes", () => {
     expect(statusResponse!.status).toBe(200);
     expect(statusResponse!.body.batch_id).toBe(batchId);
     expect(statusResponse!.body.progress).toHaveProperty("total", 1);
+  });
+});
+
+describe("batch lib — runJob with rejecting processor", () => {
+  it("does not hang and records the rejection as an error result", async () => {
+    const job = createJob([1, 2, 3], 2);
+    const processor = jest.fn(async (id: number) => {
+      if (id === 2) throw new Error("boom");
+      return { project_id: id };
+    });
+
+    await runJob(job, processor);
+
+    expect(job.status).toBe("completed");
+    expect(job.progress.done).toBe(3);
+    expect(job.results).toHaveLength(2);
+    expect(job.errors).toHaveLength(1);
+    expect(job.errors[0]).toMatchObject({ project_id: 2, error: "Error: boom" });
+    expect(job.errors[0].duration_ms).toBeGreaterThanOrEqual(0);
+  });
+
+  it("marks the job failed when every item rejects", async () => {
+    const job = createJob([1, 2], 2);
+    const processor = jest.fn(async () => {
+      throw new Error("always fails");
+    });
+
+    await runJob(job, processor);
+
+    expect(job.status).toBe("failed");
+    expect(job.progress.done).toBe(2);
+    expect(job.results).toHaveLength(0);
+    expect(job.errors).toHaveLength(2);
+  });
+
+  it("decodes contract errors thrown by processor into job.errors", async () => {
+    const job = createJob([1], 1);
+    const processor = jest.fn(async (id: number) => {
+      throw new Error("HostError: Error(Contract, #7)");
+    });
+
+    await runJob(job, processor);
+
+    expect(job.errors).toHaveLength(1);
+    expect(job.errors[0]).toMatchObject({
+      project_id: 1,
+      error: expect.stringContaining("Error(Contract, #7)"),
+      contract_error_name: "ProjectNotFound",
+      contract_error_code: 7,
+    });
+  });
+
+  it("decodes contract errors returned in result.error into job.errors", async () => {
+    const job = createJob([1], 1);
+    const processor = jest.fn(async (id: number) => {
+      return {
+        project_id: id,
+        error: "HostError: Error(Contract, #8)",
+      };
+    });
+
+    await runJob(job, processor);
+
+    expect(job.errors).toHaveLength(1);
+    expect(job.errors[0]).toMatchObject({
+      project_id: 1,
+      error: "HostError: Error(Contract, #8)",
+      contract_error_name: "ScoresOutOfRange",
+      contract_error_code: 8,
+    });
   });
 });

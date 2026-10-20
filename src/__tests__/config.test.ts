@@ -1,5 +1,4 @@
 import { config, validateRequiredEnv, initEnv } from "../config";
-import { initEnv as initLibEnv } from "../lib/env";
 
 describe("Environment Config Module (Issue #272)", () => {
   const originalEnv = { ...process.env };
@@ -53,14 +52,14 @@ describe("Environment Config Module (Issue #272)", () => {
   });
 
   describe("Optional environment variable defaults", () => {
-    it("provides fallback defaults for optional configuration fields", () => {
+    it("provides fallback defaults for optional configuration fields", async () => {
       delete process.env.STELLAR_NETWORK;
       delete process.env.RPC_URL;
       delete process.env.PORT;
       delete process.env.FRONTEND_URL;
 
       jest.resetModules();
-      const freshConfig = require("../config").config as typeof config;
+      const freshConfig = (await import("../config")).config as typeof config;
 
       expect(freshConfig.STELLAR_NETWORK).toBe("testnet");
       expect(freshConfig.RPC_URL).toBe("https://soroban-testnet.stellar.org");
@@ -68,10 +67,13 @@ describe("Environment Config Module (Issue #272)", () => {
       expect(freshConfig.FRONTEND_URL).toBe("http://localhost:3000");
     });
 
-    it("lib/env initEnv returns default port and frontend url", () => {
-      const libEnv = initLibEnv();
-      expect(libEnv.PORT).toBeDefined();
-      expect(libEnv.FRONTEND_URL).toBeDefined();
+    it("config initEnv returns default port and frontend url", () => {
+      process.env.ADMIN_SECRET_KEY = "test-secret-key";
+      process.env.PROJECT_REGISTRY_CONTRACT_ID = "C1234567890";
+
+      const configEnv = initEnv();
+      expect(configEnv.PORT).toBeDefined();
+      expect(configEnv.FRONTEND_URL).toBeDefined();
     });
   });
 });

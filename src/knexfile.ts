@@ -1,7 +1,5 @@
 import type { Knex } from "knex";
-import dotenv from "dotenv";
-
-dotenv.config();
+import fs from "fs";
 
 const baseConfig: Knex.Config = {
   client: "pg",
@@ -13,10 +11,31 @@ const baseConfig: Knex.Config = {
   pool: {
     min: 2,
     max: 10,
-    acquireTimeoutMillis: 30000,
-    idleTimeoutMillis: 60000,
+    acquireTimeoutMillis: Number(process.env.DB_ACQUIRE_TIMEOUT_MS) || 30000,
+    idleTimeoutMillis: Number(process.env.DB_IDLE_TIMEOUT_MS) || 60000,
   },
 };
+
+/**
+ * TLS options for non-local database connections. Certificate validation is
+ * always on; a private CA is supported via DB_SSL_CA_PATH (or DB_SSL_CA /
+ * DATABASE_CA).
+ */
+export function getSslConfig(): { rejectUnauthorized: true; ca?: string } {
+  const caPath = process.env.DB_SSL_CA_PATH || process.env.DB_SSL_CA || process.env.DATABASE_CA;
+  if (caPath) {
+    try {
+      return {
+        ca: fs.readFileSync(caPath, "utf8"),
+        rejectUnauthorized: true,
+      };
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      throw new Error(`Failed to read SSL CA file at ${caPath}: ${message}`, { cause: error });
+    }
+  }
+  return { rejectUnauthorized: true };
+}
 
 const config: Record<string, Knex.Config> = {
   development: {
@@ -53,7 +72,7 @@ const config: Record<string, Knex.Config> = {
       database: process.env.DB_NAME,
       user: process.env.DB_USER,
       password: process.env.DB_PASSWORD,
-      ssl: { rejectUnauthorized: false },
+      ssl: getSslConfig(),
     },
   },
 
@@ -65,11 +84,11 @@ const config: Record<string, Knex.Config> = {
       database: process.env.DB_NAME,
       user: process.env.DB_USER,
       password: process.env.DB_PASSWORD,
-      ssl: { rejectUnauthorized: false },
+      ssl: getSslConfig(),
     },
     pool: {
-      min: 5,
-      max: 30,
+      min: Number(process.env.DB_POOL_MIN) || 5,
+      max: Number(process.env.DB_POOL_MAX) || 30,
     },
   },
 };

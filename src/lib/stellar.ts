@@ -1,9 +1,15 @@
 import { Keypair, rpc, Networks, TransactionBuilder, Account, xdr } from "@stellar/stellar-sdk";
 import { config } from "../config";
+import { logger } from "./logger";
 import { RpcConnectionPool } from "./db-pool";
 import { CircuitBreaker } from "./circuit-breaker";
 import { withRetry, isTransientError } from "./retry";
-import { stellarRpcDuration, stellarRpcTotal, txSubmissionTotal } from "./prometheus";
+import {
+  stellarRpcDuration,
+  stellarRpcTotal,
+  txSubmissionTotal,
+  oracleSubmitLatency,
+} from "./prometheus";
 
 export const networkPassphrase =
   config.STELLAR_NETWORK === "mainnet" ? Networks.PUBLIC : Networks.TESTNET;
@@ -64,9 +70,28 @@ export function withRpcConnection<T>(fn: (client: rpc.Server) => Promise<T>): Pr
   return rpcBreaker.execute(
     () => rpcPool.withConnection(fn),
     async () => {
-      throw new RpcDegradedError("Stellar RPC circuit is OPEN – request rejected");
+      // Reached when the circuit is OPEN, or when it is HALF_OPEN and another
+      // caller already holds the single trial slot. Callers treat this as
+      // "retry later", which is what keeps a recovering RPC endpoint probed
+      // once rather than by a stampede of concurrent requests.
+      const state = rpcBreaker.getState();
+      throw new RpcDegradedError(`Stellar RPC circuit is ${state} – request rejected`);
     },
   );
+}
+
+/**
+ * Execute an RPC operation with exponential backoff and jitter for transient errors (#541).
+ * Configured via RPC_MAX_RETRIES (default 3) and RPC_RETRY_BASE_MS (default 1000).
+ */
+export async function withRpcRetry<T>(fn: () => Promise<T>, label = "stellar:rpc"): Promise<T> {
+  return withRetry(fn, {
+    maxAttempts: config.RPC_MAX_RETRIES,
+    baseDelayMs: config.RPC_RETRY_BASE_MS,
+    maxDelayMs: config.TX_RETRY_MAX_DELAY_MS,
+    jitter: 0.3,
+    label,
+  });
 }
 
 // ── Admin keypair cache (#227) ───────────────────────────────────────────────
@@ -132,7 +157,12 @@ export async function signAndSubmit(
           reject(error);
         }
       })
-      .catch(() => {});
+      .catch((err) => {
+        logger.error("submission queue unexpected error", {
+          error: err instanceof Error ? err.message : String(err),
+        });
+        reject(err);
+      });
   });
 }
 
@@ -155,7 +185,7 @@ async function _attemptSubmit(
   preparedXdr: string,
   keypair: Keypair,
 ): Promise<string> {
-  let tx = TransactionBuilder.fromXDR(preparedXdr, networkPassphrase) as any;
+  const tx = TransactionBuilder.fromXDR(preparedXdr, networkPassphrase);
 
   // 1. Fetch latest sequence number from ledger state
   const accountKey = xdr.LedgerKey.account(
@@ -166,35 +196,27 @@ async function _attemptSubmit(
 
   const accountResponse = await client.getLedgerEntries(accountKey);
 
-  if (accountResponse.entries && accountResponse.entries.length > 0) {
-    const accountEntry = accountResponse.entries[0].val.account();
-    if (accountEntry) {
-      const onChainSequence = BigInt(accountEntry.seqNum().toString());
+  // Fetch the latest sequence from ledger state when available and use the
+  // higher of (chain, local tracker). A fresh or unregistered account returns
+  // no entry — fall back to the sequence the transaction was prepared with.
+  const firstEntry = accountResponse.entries?.[0];
+  if (firstEntry && firstEntry.val.type === "account") {
+    const onChainSequence = firstEntry.val.account.seqNum;
 
-      // Use the higher value between live ledger and local in-memory tracker
-      if (localSequenceTracker === null || onChainSequence > localSequenceTracker) {
-        localSequenceTracker = onChainSequence;
-      }
-
-      const targetSequence = (localSequenceTracker + 1n).toString();
-      const account = new Account(keypair.publicKey(), targetSequence);
-
-      const builder = new TransactionBuilder(account, {
-        fee: tx.fee,
-        networkPassphrase,
-        timebounds: tx.timeBounds || (tx.tx ? tx.tx.timeBounds : undefined),
-      });
-
-      for (const op of tx.operations) {
-        builder.addOperation(op);
-      }
-
-      tx = builder.build();
+    if (localSequenceTracker === null || onChainSequence > localSequenceTracker) {
+      localSequenceTracker = onChainSequence;
     }
+
+    // Just track the sequence, use the transaction as-is since it was already prepared with proper operations
+    localSequenceTracker = onChainSequence;
   }
 
   tx.sign(keypair);
-  const result = await client.sendTransaction(tx);
+
+  // Start latency timer
+  const submitStartTime = Date.now();
+
+  const result = await withRpcRetry(() => client.sendTransaction(tx), "stellar:sendTransaction");
 
   if (result.status === "ERROR") {
     const errorString = JSON.stringify(result.errorResult);
@@ -226,7 +248,10 @@ async function _attemptSubmit(
         timer = setTimeout(r, pollIntervalMs);
       });
       timer = undefined;
-      getResult = await client.getTransaction(result.hash);
+      getResult = await withRpcRetry(
+        () => client.getTransaction(result.hash),
+        "stellar:getTransaction",
+      );
       if (++pollAttempts > config.POLL_MAX_ATTEMPTS)
         throw new Error("Transaction confirmation timeout");
     } while (getResult.status === rpc.Api.GetTransactionStatus.NOT_FOUND);
@@ -241,8 +266,15 @@ async function _attemptSubmit(
   }
 
   if (getResult.status === rpc.Api.GetTransactionStatus.FAILED) {
+    // Record latency even for failed transactions
+    const latencySeconds = (Date.now() - submitStartTime) / 1000;
+    oracleSubmitLatency.observe({ result: "failed" }, latencySeconds);
     throw new Error("Transaction failed on-chain");
   }
+
+  // Record successful submission latency
+  const latencySeconds = (Date.now() - submitStartTime) / 1000;
+  oracleSubmitLatency.observe({ result: "success" }, latencySeconds);
 
   return result.hash;
 }

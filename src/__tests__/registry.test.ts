@@ -45,6 +45,13 @@ jest.mock("../lib/stellar", () => ({
     publicKey: () => "GPUBKEY",
   }),
   signAndSubmit: jest.fn().mockResolvedValue("tx_hash_abc123"),
+  RpcDegradedError: class RpcDegradedError extends Error {
+    constructor(message?: string) {
+      super(message ?? "RPC is degraded");
+      this.name = "RpcDegradedError";
+    }
+  },
+  withRpcRetry: jest.fn().mockImplementation((fn: () => any) => fn()),
 }));
 
 jest.mock("../config", () => ({
@@ -56,7 +63,15 @@ jest.mock("../config", () => ({
   },
 }));
 
-import { updateImpactScore, getTotalProjects, RpcDegradedError } from "../lib/registry";
+import {
+  updateImpactScore,
+  getTotalProjects,
+  projectExists,
+  RpcDegradedError,
+  StaleSequenceError,
+  getLocalSequence,
+  resetLocalSequence,
+} from "../lib/registry";
 import { withRpcConnection, signAndSubmit } from "../lib/stellar";
 import {
   Contract,
@@ -69,6 +84,18 @@ import {
 describe("registry module", () => {
   beforeEach(() => {
     jest.clearAllMocks();
+    resetLocalSequence();
+    (withRpcConnection as jest.Mock).mockImplementation((fn: (client: any) => Promise<any>) =>
+      fn({
+        getAccount: jest.fn().mockResolvedValue({ sequence: "0" }),
+        prepareTransaction: jest.fn().mockResolvedValue({
+          toXDR: () => "prepared_xdr",
+        }),
+        simulateTransaction: jest.fn().mockResolvedValue({
+          result: { retval: { _value: 42 } },
+        }),
+      }),
+    );
   });
 
   describe("updateImpactScore", () => {
@@ -102,6 +129,61 @@ describe("registry module", () => {
           fee: BASE_FEE,
         }),
       );
+    });
+
+    it("tracks local sequence number on first fetch and increments on successful submission", async () => {
+      (withRpcConnection as jest.Mock).mockImplementationOnce((fn: (client: any) => Promise<any>) =>
+        fn({
+          getAccount: jest.fn().mockResolvedValue({ sequence: "100" }),
+          prepareTransaction: jest.fn().mockResolvedValue({ toXDR: () => "prepared_xdr" }),
+        }),
+      );
+
+      await updateImpactScore(1, 80, 90);
+      expect(getLocalSequence()).toBe(101n);
+    });
+
+    it("rejects stale sequence numbers with StaleSequenceError", async () => {
+      // First submission with sequence 100
+      (withRpcConnection as jest.Mock).mockImplementationOnce((fn: (client: any) => Promise<any>) =>
+        fn({
+          getAccount: jest.fn().mockResolvedValue({ sequence: "100" }),
+          prepareTransaction: jest.fn().mockResolvedValue({ toXDR: () => "prepared_xdr" }),
+        }),
+      );
+      await updateImpactScore(1, 80, 90);
+      expect(getLocalSequence()).toBe(101n);
+
+      // Second submission receives stale sequence 99 from slow/stale RPC
+      (withRpcConnection as jest.Mock).mockImplementationOnce((fn: (client: any) => Promise<any>) =>
+        fn({
+          getAccount: jest.fn().mockResolvedValue({ sequence: "99" }),
+          prepareTransaction: jest.fn().mockResolvedValue({ toXDR: () => "prepared_xdr" }),
+        }),
+      );
+
+      await expect(updateImpactScore(1, 80, 90)).rejects.toThrow(StaleSequenceError);
+    });
+
+    it("handles concurrent submissions safely through mutex queue", async () => {
+      let currentSeq = 10;
+      (withRpcConnection as jest.Mock).mockImplementation(
+        async (fn: (client: any) => Promise<any>) => {
+          const seqToReturn = String(currentSeq++);
+          return fn({
+            getAccount: jest.fn().mockResolvedValue({ sequence: seqToReturn }),
+            prepareTransaction: jest.fn().mockResolvedValue({ toXDR: () => "prepared_xdr" }),
+          });
+        },
+      );
+
+      const p1 = updateImpactScore(1, 80, 90);
+      const p2 = updateImpactScore(2, 85, 95);
+
+      const [h1, h2] = await Promise.all([p1, p2]);
+      expect(h1).toBe("tx_hash_abc123");
+      expect(h2).toBe("tx_hash_abc123");
+      expect(getLocalSequence()).toBe(12n);
     });
   });
 
@@ -152,17 +234,7 @@ describe("registry module", () => {
       expect(typeof total).toBe("number");
     });
 
-    it("throws when the simulation succeeds but retval is missing", async () => {
-      // scValToNative is globally mocked to always return 42 regardless of
-      // input, so simulate the real SDK's behavior of throwing when handed
-      // an undefined ScVal — this is what a missing `retval` actually
-      // produces once passed through `scValToNative`.
-      (scValToNative as jest.Mock).mockImplementationOnce((val: unknown) => {
-        if (val === undefined) {
-          throw new TypeError("scValToNative: value is undefined");
-        }
-        return 42;
-      });
+    it("throws specific error message when the simulation succeeds but retval is missing", async () => {
       (withRpcConnection as jest.Mock).mockImplementationOnce((fn: (client: any) => Promise<any>) =>
         fn({
           getAccount: jest.fn().mockResolvedValue({ sequence: "0" }),
@@ -172,7 +244,59 @@ describe("registry module", () => {
         }),
       );
 
-      await expect(getTotalProjects()).rejects.toThrow();
+      await expect(getTotalProjects()).rejects.toThrow(
+        "total_projects simulation returned no result value",
+      );
+    });
+
+    it("throws specific error message when the simulation succeeds but result is undefined", async () => {
+      (withRpcConnection as jest.Mock).mockImplementationOnce((fn: (client: any) => Promise<any>) =>
+        fn({
+          getAccount: jest.fn().mockResolvedValue({ sequence: "0" }),
+          simulateTransaction: jest.fn().mockResolvedValue({}),
+        }),
+      );
+
+      await expect(getTotalProjects()).rejects.toThrow(
+        "total_projects simulation returned no result value",
+      );
+    });
+  });
+
+  describe("projectExists (#768)", () => {
+    function withSimulation(response: unknown): void {
+      (withRpcConnection as jest.Mock).mockImplementationOnce(
+        (fn: (client: unknown) => Promise<unknown>) =>
+          fn({
+            getAccount: jest.fn().mockResolvedValue({ sequence: "0" }),
+            simulateTransaction: jest.fn().mockResolvedValue(response),
+          }),
+      );
+    }
+
+    it("returns true when get_project simulates successfully", async () => {
+      withSimulation({ result: { retval: { _value: 1 } } });
+
+      await expect(projectExists(1)).resolves.toBe(true);
+      expect(nativeToScVal).toHaveBeenCalledWith(1, { type: "u32" });
+    });
+
+    it("returns false when the contract panics with ProjectNotFound (#7)", async () => {
+      withSimulation({ error: "HostError: Error(Contract, #7)" });
+
+      await expect(projectExists(999999)).resolves.toBe(false);
+    });
+
+    it("returns false when the contract panics with ProjectArchived (#3)", async () => {
+      withSimulation({ error: "HostError: Error(Contract, #3)" });
+
+      await expect(projectExists(1)).resolves.toBe(false);
+    });
+
+    it("throws for a non-project simulation error", async () => {
+      withSimulation({ error: "simulation failed: contract trapped" });
+
+      await expect(projectExists(1)).rejects.toThrow("simulation failed: contract trapped");
     });
   });
 

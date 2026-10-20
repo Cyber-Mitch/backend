@@ -51,10 +51,27 @@ describe("gRPC Service Integration", () => {
   });
 
   afterAll((done) => {
-    client.close();
-    server.tryShutdown(() => {
-      done();
-    });
+    let finished = false;
+    const finish = () => {
+      if (!finished) {
+        finished = true;
+        done();
+      }
+    };
+    try {
+      client.close();
+      server.tryShutdown(() => finish());
+    } catch {
+      finish();
+    }
+    setTimeout(() => {
+      try {
+        server.forceShutdown();
+      } catch {
+        // ignore errors during forced shutdown
+      }
+      finish();
+    }, 200);
   });
 
   beforeEach(() => {
@@ -192,5 +209,21 @@ describe("gRPC Service Integration", () => {
 
     stream.write({ project_id: 1 });
     stream.write({ project_id: 2 });
+  });
+
+  it("should route bind failures through the listen error handler", (done) => {
+    const handleBindError = jest.fn((err: NodeJS.ErrnoException, port: number | string) => {
+      try {
+        expect(err).toBeInstanceOf(Error);
+        expect(err.message).toContain("No address added");
+        expect(port).toBe(PORT);
+        duplicateServer.forceShutdown();
+        done();
+      } catch (assertionError) {
+        duplicateServer.forceShutdown();
+        done(assertionError);
+      }
+    });
+    const duplicateServer = startGrpcServer(PORT, handleBindError);
   });
 });

@@ -21,6 +21,14 @@ export const httpRequestsTotal = new client.Counter({
   registers: [register],
 });
 
+// ── Legacy API usage (#660) ─────────────────────────────────────────────────
+export const legacyApiRequestsTotal = new client.Counter({
+  name: "legacy_api_requests_total",
+  help: "Requests to the deprecated unversioned /api/* routes",
+  labelNames: ["path"] as const,
+  registers: [register],
+});
+
 // ── Stellar RPC metrics ─────────────────────────────────────────────────────
 export const stellarRpcDuration = new client.Histogram({
   name: "stellar_rpc_call_duration_seconds",
@@ -53,6 +61,16 @@ export const cronJobTotal = new client.Counter({
   registers: [register],
 });
 
+// Projects skipped by the cron before submitting, labelled by reason
+// (paused, archived, deleted, unchanged) so the "ALL projects failed" alert
+// stays quiet during expected states (#765).
+export const cronProjectsSkipped = new client.Counter({
+  name: "cron_projects_skipped_total",
+  help: "Projects the cron skipped before submitting, labelled by reason",
+  labelNames: ["job", "reason"] as const,
+  registers: [register],
+});
+
 // ── Transaction metrics ─────────────────────────────────────────────────────
 export const txSubmissionTotal = new client.Counter({
   name: "stellar_tx_submissions_total",
@@ -66,6 +84,53 @@ export const circuitBreakerState = new client.Gauge({
   name: "circuit_breaker_state",
   help: "Circuit breaker state (0=CLOSED, 1=HALF_OPEN, 2=OPEN)",
   labelNames: ["name"] as const,
+  registers: [register],
+});
+
+// ── Oracle SLO metrics ──────────────────────────────────────────────────────
+export const oracleScoreAge = new client.Gauge({
+  name: "oracle_score_age_seconds",
+  help: "Age of the last score update for a project (seconds since last_update_timestamp)",
+  labelNames: ["project_id"] as const,
+  registers: [register],
+});
+
+export const oracleSignerBalance = new client.Gauge({
+  name: "oracle_signer_balance_xlm",
+  help: "Oracle signer account balance in XLM",
+  registers: [register],
+});
+
+export const registryPaused = new client.Gauge({
+  name: "registry_paused",
+  help: "Registry paused state (0=active, 1=paused)",
+  registers: [register],
+});
+
+export const oracleSubmitLatency = new client.Histogram({
+  name: "oracle_submit_to_confirm_latency_seconds",
+  help: "Time from transaction submission to confirmation",
+  labelNames: ["result"] as const,
+  buckets: [0.5, 1, 2, 5, 10, 15, 30, 60],
+  registers: [register],
+});
+
+// ── Frontend telemetry (#770) ───────────────────────────────────────────────
+// Ingested by `POST /v1/telemetry`. Labels are restricted to the validated
+// schema fields so a report can never smuggle PII (or unbounded cardinality)
+// into the time series.
+export const frontendErrorsTotal = new client.Counter({
+  name: "frontend_errors_total",
+  help: "Frontend error reports by kind and decoded Soroban contract error name",
+  labelNames: ["kind", "contract_error_name"] as const,
+  registers: [register],
+});
+
+export const frontendWebVital = new client.Histogram({
+  name: "frontend_web_vital",
+  help: "Frontend Web Vitals measurements by metric name and rating",
+  labelNames: ["name", "rating"] as const,
+  buckets: [50, 100, 200, 500, 1000, 2000, 3000, 5000, 10000, 30000],
   registers: [register],
 });
 

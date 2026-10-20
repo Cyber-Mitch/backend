@@ -1,4 +1,5 @@
 import { getCorrelationId } from "./correlation";
+import { parseContractError } from "./contractErrors";
 
 type LogLevel = "debug" | "info" | "warn" | "error";
 
@@ -14,11 +15,9 @@ const ENV_LEVEL_MAP: Record<string, LogLevel> = {
 };
 
 let currentLevel: LogLevel | null = null;
+let envLevel: LogLevel | null = null;
 
-function getConfiguredLevel(): LogLevel {
-  if (currentLevel !== null) {
-    return currentLevel;
-  }
+function resolveEnvLevel(): LogLevel {
   if (process.env.LOG_LEVEL) {
     const raw = process.env.LOG_LEVEL.toLowerCase() as LogLevel;
     if (raw in LEVEL_RANK) {
@@ -27,6 +26,16 @@ function getConfiguredLevel(): LogLevel {
   }
   const env = (process.env.NODE_ENV || "development").toLowerCase();
   return ENV_LEVEL_MAP[env] || "info";
+}
+
+function getConfiguredLevel(): LogLevel {
+  if (currentLevel !== null) {
+    return currentLevel;
+  }
+  if (envLevel === null) {
+    envLevel = resolveEnvLevel();
+  }
+  return envLevel;
 }
 
 function shouldEmit(level: LogLevel): boolean {
@@ -51,14 +60,25 @@ function emit(level: LogLevel, message: string, meta?: Record<string, unknown>):
 }
 
 function formatError(err: unknown): Record<string, unknown> {
-  if (err instanceof Error) {
+  const contractErr = parseContractError(err);
+  const contractFields = contractErr
+    ? {
+        contract_error_name: contractErr.name,
+        contract_error_code: contractErr.code,
+        contract_error_source: contractErr.source,
+      }
+    : {};
+
+  if (err && typeof err === "object") {
+    const e = err as Record<string, unknown>;
     return {
-      error_name: err.name,
-      error_message: err.message,
-      error_stack: err.stack,
+      error_name: String(e.name || "Error"),
+      error_message: String(e.message || e),
+      error_stack: e.stack ? String(e.stack) : undefined,
+      ...contractFields,
     };
   }
-  return { error: String(err) };
+  return { error: String(err), ...contractFields };
 }
 
 export const logger = {
@@ -71,9 +91,16 @@ export const logger = {
 
 export function setLogLevel(level: LogLevel): void {
   if (!(level in LEVEL_RANK)) {
-    throw new Error(`Invalid log level: ${level}. Valid levels: ${Object.keys(LEVEL_RANK).join(", ")}`);
+    throw new Error(
+      `Invalid log level: ${level}. Valid levels: ${Object.keys(LEVEL_RANK).join(", ")}`,
+    );
   }
   currentLevel = level;
+}
+
+export function clearLogLevelCache(): void {
+  currentLevel = null;
+  envLevel = null;
 }
 
 export function getLogLevel(): LogLevel {

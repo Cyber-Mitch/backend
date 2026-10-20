@@ -1,11 +1,13 @@
+import { logger } from "./logger";
+import { parseContractError } from "./contractErrors";
+import { config } from "../config";
+
 /**
  * Batch transaction support (#54).
  *
- * Soroban native batch transactions are not yet available on mainnet.
- * This module defines the batch interface and falls back to sequential
- * processing until the capability is detected. Once Soroban exposes
- * batch support, `isSorobanBatchAvailable()` should return true and
- * `runBatchNative()` can be wired in.
+ * This module provides concurrent batch processing for transactions.
+ * When Soroban native batch transactions become available, they can be
+ * integrated as a replacement for the current concurrent sequential approach.
  */
 
 export type BatchStatus = "queued" | "running" | "completed" | "failed";
@@ -16,6 +18,8 @@ export interface BatchResult {
   credit_quality?: number;
   green_impact?: number;
   error?: string;
+  contract_error_name?: string;
+  contract_error_code?: number;
   /** Wall-clock ms taken to process this item. */
   duration_ms?: number;
 }
@@ -44,19 +48,46 @@ export interface BatchBenchmark {
 }
 
 const jobs = new Map<string, BatchJob>();
+const BATCH_JOB_TTL_MS = config.BATCH_JOB_TTL_MS;
+const BATCH_JOB_MAX_SIZE = config.BATCH_JOB_MAX_SIZE;
 
 /**
- * Detect whether the connected Soroban RPC exposes native batch transaction
- * support. Currently always returns false – update this check once Soroban
- * ships the capability (monitor: https://github.com/stellar/stellar-core).
+ * Evict completed/failed jobs older than TTL and enforce max size limit.
  */
-export function isSorobanBatchAvailable(): boolean {
-  // TODO: replace with an actual capability-detection call against the RPC
-  // e.g. check server info flags or protocol version >= BATCH_PROTOCOL_VERSION
-  return false;
+function evictStaleJobs(): void {
+  const now = Date.now();
+  const jobArray = Array.from(jobs.entries());
+
+  // Evict jobs older than TTL
+  for (const [id, job] of jobArray) {
+    if ((job.status === "completed" || job.status === "failed") && job.completed_at) {
+      const completedTime = new Date(job.completed_at).getTime();
+      if (now - completedTime > BATCH_JOB_TTL_MS) {
+        jobs.delete(id);
+      }
+    }
+  }
+
+  // Enforce max size - remove oldest completed/failed jobs first
+  if (jobs.size > BATCH_JOB_MAX_SIZE) {
+    const sortedJobs = Array.from(jobs.entries())
+      .filter(([_, job]) => job.status === "completed" || job.status === "failed")
+      .sort((a, b) => {
+        const timeA = a[1].completed_at ? new Date(a[1].completed_at).getTime() : 0;
+        const timeB = b[1].completed_at ? new Date(b[1].completed_at).getTime() : 0;
+        return timeA - timeB;
+      });
+
+    const toRemove = jobs.size - BATCH_JOB_MAX_SIZE;
+    for (let i = 0; i < toRemove && i < sortedJobs.length; i++) {
+      jobs.delete(sortedJobs[i][0]);
+    }
+  }
 }
 
 export function createJob(projectIds: number[], concurrency: number): BatchJob {
+  evictStaleJobs();
+
   const job: BatchJob = {
     id: `batch_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`,
     status: "queued",
@@ -77,36 +108,16 @@ export function getJob(id: string): BatchJob | undefined {
 }
 
 /**
- * Run a batch job.
- * Routes to `runBatchNative()` when Soroban batch is available,
- * otherwise falls back to concurrent sequential processing.
+ * Run a batch job using concurrent sequential processing.
  */
 export async function runJob(
   job: BatchJob,
   processor: (projectId: number) => Promise<BatchResult>,
 ): Promise<void> {
-  if (isSorobanBatchAvailable()) {
-    await runBatchNative(job, processor);
-  } else {
-    await runBatchSequential(job, processor);
-  }
-}
-
-/**
- * Placeholder for future native Soroban batch execution.
- * Implement once the RPC exposes batch transaction support.
- */
-async function runBatchNative(
-  job: BatchJob,
-  processor: (projectId: number) => Promise<BatchResult>,
-): Promise<void> {
-  // Native batch: submit all ops in a single transaction envelope.
-  // Not yet available — fall back to sequential until implemented.
-  console.warn("[batch] native Soroban batch detected but not yet implemented; falling back");
   await runBatchSequential(job, processor);
 }
 
-/** Sequential (concurrent-limited) fallback processing. */
+/** Sequential (concurrent-limited) processing. */
 async function runBatchSequential(
   job: BatchJob,
   processor: (projectId: number) => Promise<BatchResult>,
@@ -125,17 +136,39 @@ async function runBatchSequential(
         const id = queue.shift()!;
         active++;
         const itemStart = Date.now();
-        processor(id).then((result) => {
-          result.duration_ms = Date.now() - itemStart;
-          if (result.error) {
-            job.errors.push(result);
-          } else {
-            job.results.push(result);
-          }
-          job.progress.done++;
-          active--;
-          next();
-        });
+        processor(id)
+          .then((result) => {
+            result.duration_ms = Date.now() - itemStart;
+            if (result.error) {
+              if (!result.contract_error_name) {
+                const decoded = parseContractError(result.error);
+                if (decoded) {
+                  result.contract_error_name = decoded.name;
+                  result.contract_error_code = decoded.code;
+                }
+              }
+              job.errors.push(result);
+            } else {
+              job.results.push(result);
+            }
+            job.progress.done++;
+            active--;
+            next();
+          })
+          .catch((err) => {
+            const decoded = parseContractError(err);
+            job.errors.push({
+              project_id: id,
+              error: String(err),
+              ...(decoded
+                ? { contract_error_name: decoded.name, contract_error_code: decoded.code }
+                : {}),
+              duration_ms: Date.now() - itemStart,
+            });
+            job.progress.done++;
+            active--;
+            next();
+          });
       }
       if (active === 0 && queue.length === 0) resolve();
     }
@@ -143,7 +176,10 @@ async function runBatchSequential(
   });
 
   const totalMs = Date.now() - jobStart;
-  job.status = job.errors.length === job.project_ids.length ? "failed" : "completed";
+  job.status =
+    job.project_ids.length > 0 && job.errors.length === job.project_ids.length
+      ? "failed"
+      : "completed";
   job.completed_at = new Date().toISOString();
   job.benchmark = {
     total_ms: totalMs,

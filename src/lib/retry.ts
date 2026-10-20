@@ -6,6 +6,9 @@
  * re-thrown immediately without consuming retry budget.
  */
 
+import { logger } from "./logger";
+import { parseContractError } from "./contractErrors";
+
 export interface RetryConfig {
   /** Maximum number of attempts (including the first). Default: 4 */
   maxAttempts: number;
@@ -33,7 +36,6 @@ const PERMANENT_ERROR_PATTERNS = [
   "tx_insufficient_balance",
   "tx_no_account",
   "tx_insufficient_fee",
-  "contract_error",
   "ADMIN_SECRET_KEY not set",
 ];
 
@@ -46,19 +48,26 @@ interface StatusCarryingError {
   response?: { status?: number };
 }
 
-/** Pulls an HTTP-style status code off an error, from either a property or the message text. */
-function extractHttpStatus(err: unknown): number | undefined {
+/** Pulls an HTTP-style status code off an error, strictly from structured fields or numeric values. */
+export function extractHttpStatus(err: unknown): number | undefined {
+  if (typeof err === "number") {
+    return err;
+  }
   if (err && typeof err === "object") {
     const { status, statusCode, response } = err as StatusCarryingError;
     const direct = status ?? statusCode ?? response?.status;
     if (typeof direct === "number") return direct;
   }
-  const msg = err instanceof Error ? err.message : String(err);
-  const match = msg.match(/\b([45]\d{2})\b/);
-  return match ? Number(match[1]) : undefined;
+  return undefined;
 }
 
 export function isTransientError(err: unknown): boolean {
+  // Contract panics: NOT retried unless their code is explicitly marked retryable.
+  const contractErr = parseContractError(err);
+  if (contractErr !== null) {
+    return contractErr.retryable;
+  }
+
   const msg = err instanceof Error ? err.message : String(err);
   if (PERMANENT_ERROR_PATTERNS.some((p) => msg.includes(p))) return false;
 
@@ -94,24 +103,36 @@ export async function withRetry<T>(
     try {
       const result = await fn();
       if (attempt > 0) {
-        console.log(`[${cfg.label}] succeeded on attempt ${attempt + 1}`);
+        logger.info(`[${cfg.label}] succeeded on attempt ${attempt + 1}`, {
+          attempt: attempt + 1,
+          label: cfg.label,
+          maxAttempts: cfg.maxAttempts,
+        });
       }
       return result;
     } catch (err) {
       lastError = err;
 
       if (!isTransientError(err)) {
-        console.warn(`[${cfg.label}] permanent error, not retrying:`, (err as Error).message);
+        logger.warn(`[${cfg.label}] permanent error, not retrying`, {
+          ...logger.formatError(err),
+          attempt: attempt + 1,
+          label: cfg.label,
+          maxAttempts: cfg.maxAttempts,
+        });
         throw err;
       }
 
       if (attempt + 1 >= cfg.maxAttempts) break;
 
       const delay = backoffDelay(attempt, cfg);
-      console.warn(
-        `[${cfg.label}] attempt ${attempt + 1}/${cfg.maxAttempts} failed: ${(err as Error).message}. ` +
-          `Retrying in ${delay}ms…`,
-      );
+      logger.warn(`[${cfg.label}] attempt ${attempt + 1}/${cfg.maxAttempts} failed; retrying`, {
+        ...logger.formatError(err),
+        attempt: attempt + 1,
+        delayMs: delay,
+        label: cfg.label,
+        maxAttempts: cfg.maxAttempts,
+      });
       await new Promise((r) => setTimeout(r, delay));
     }
   }

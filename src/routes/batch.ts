@@ -4,8 +4,11 @@ import { recordScoreHistory } from "../lib/history";
 import { triggerWebhooks } from "../lib/webhooks";
 import { getSolarData, getSatelliteData } from "./iot";
 import { computeScores } from "../lib/scoring";
-import { updateImpactScore, getTotalProjects } from "../lib/registry";
-import { badRequest, MAX_PROJECT_ID } from "../middleware/errors";
+import { updateImpactScore, getTotalProjects, RpcDegradedError } from "../lib/registry";
+import { withProjectLock } from "../lib/request-queue";
+import { tryBeginUpdate, markCompleted, markFailed } from "../lib/duplicate-detection";
+import { badRequest, maxProjectId } from "../middleware/errors";
+import { parseContractError } from "../lib/contractErrors";
 
 const router = Router();
 
@@ -26,29 +29,36 @@ router.post("/score-update", async (req: Request, res: Response) => {
     if (!Array.isArray(body.project_ids)) {
       throw badRequest("project_ids must be an array of positive integers");
     }
-    if (!body.project_ids.every((n) => Number.isInteger(n) && (n as number) >= 1)) {
-      throw badRequest("project_ids must contain only positive integers");
+    const parsed: number[] = [];
+    for (const raw of body.project_ids) {
+      if (typeof raw !== "number" || !Number.isInteger(raw) || raw < 1) {
+        throw badRequest("project_ids must contain only positive integers");
+      }
+      parsed.push(raw);
     }
-    if (!body.project_ids.every((n) => (n as number) <= MAX_PROJECT_ID)) {
-      throw badRequest(`project_ids must not exceed maximum project id ${MAX_PROJECT_ID}`);
+    const max = maxProjectId();
+    if (!parsed.every((n) => n <= max)) {
+      throw badRequest(`project_ids must not exceed maximum project id ${max}`);
     }
-    projectIds = body.project_ids as number[];
+    projectIds = parsed;
   } else {
     const total = await getTotalProjects();
     projectIds = Array.from({ length: total }, (_, i) => i + 1);
   }
 
-  const rawConcurrency = body.concurrency as number | undefined;
-  const concurrency = rawConcurrency !== undefined
-    ? Math.min(MAX_CONCURRENCY, Math.max(1, Math.floor(rawConcurrency)))
-    : DEFAULT_CONCURRENCY;
+  const rawConcurrency = typeof body.concurrency === "number" ? body.concurrency : undefined;
+  const concurrency =
+    rawConcurrency !== undefined
+      ? Math.min(MAX_CONCURRENCY, Math.max(1, Math.floor(rawConcurrency)))
+      : DEFAULT_CONCURRENCY;
 
   const job = createJob(projectIds, concurrency);
+  const initialStatus = job.status;
 
   // Fire-and-forget — caller polls /status
   runJob(job, async (projectId) => {
     return withProjectLock(projectId, async () => {
-      const { allowed, key, reason } = tryBeginUpdate(projectId);
+      const { allowed, reason } = tryBeginUpdate(projectId);
       if (!allowed) {
         return { project_id: projectId, skipped: true, skip_reason: reason };
       }
@@ -62,7 +72,12 @@ router.post("/score-update", async (req: Request, res: Response) => {
         } catch (updateErr) {
           if (updateErr instanceof RpcDegradedError) {
             recordScoreHistory(projectId, scores.credit_quality, scores.green_impact);
-            triggerWebhooks({ project_id: projectId, ...scores, tx_hash: "deferred", timestamp: Date.now() });
+            triggerWebhooks({
+              project_id: projectId,
+              ...scores,
+              tx_hash: "deferred",
+              timestamp: Date.now(),
+            });
             markCompleted(projectId);
             return { project_id: projectId, tx_hash: "deferred", ...scores };
           }
@@ -74,7 +89,14 @@ router.post("/score-update", async (req: Request, res: Response) => {
         return { project_id: projectId, tx_hash, ...scores };
       } catch (err) {
         markFailed(projectId);
-        return { project_id: projectId, error: String(err) };
+        const decoded = parseContractError(err);
+        return {
+          project_id: projectId,
+          error: String(err),
+          ...(decoded
+            ? { contract_error_name: decoded.name, contract_error_code: decoded.code }
+            : {}),
+        };
       }
     });
   }).catch(() => {
@@ -84,7 +106,7 @@ router.post("/score-update", async (req: Request, res: Response) => {
 
   res.status(202).json({
     batch_id: job.id,
-    status: job.status,
+    status: initialStatus,
     total: job.project_ids.length,
     concurrency: job.concurrency,
   });

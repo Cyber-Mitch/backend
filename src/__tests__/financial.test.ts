@@ -119,6 +119,69 @@ describe("calculateNPV", () => {
   });
 });
 
+describe("calculateNPV — reference values (issue #689)", () => {
+  // Reference project: $1000 upfront, $100/year for 10 years, 8% nominal
+  // discount rate, no inflation, degradation, maintenance or salvage.
+  // NPV = -1000 + 100 * annuity factor at 8% over 10 years.
+  const REFERENCE_INPUT = {
+    system_capacity_kw: 1,
+    installation_cost: 1000,
+    annual_maintenance_cost: 0,
+    annual_energy_output_kwh: 1000,
+    electricity_price_per_kwh: 0.1,
+    degradation_rate: 0,
+    discount_rate: 0.08,
+    inflation_rate: 0,
+    project_lifetime_years: 10,
+    tax_incentives: 0,
+    salvage_value: 0,
+    capacity_factor: 1,
+  };
+
+  it("discounts nominal cash flows at the nominal rate (zero inflation)", () => {
+    const result = calculateNPV(REFERENCE_INPUT);
+
+    // Closed form: -1000 + 100 * (1 - 1.08^-10) / 0.08 = -328.99186...
+    const annuityFactor = (1 - Math.pow(1.08, -10)) / 0.08;
+    const expected = -1000 + 100 * annuityFactor;
+
+    expect(result.npv).toBeCloseTo(expected, 1);
+    expect(result.npv).toBeCloseTo(-328.99, 1);
+
+    // Year 1 discounted cash flow = 100 / 1.08.
+    expect(result.discounted_cash_flows[1].discounted_cash_flow).toBeCloseTo(100 / 1.08, 2);
+  });
+
+  it("uses the nominal rate on inflated cash flows, not the real rate", () => {
+    const inflatedInput = {
+      ...REFERENCE_INPUT,
+      inflation_rate: 0.03,
+      electricity_price_per_kwh: 0.1,
+    };
+    const result = calculateNPV(inflatedInput);
+
+    // Correct: nominal cash flows 100*(1.03)^(y-1) discounted at the nominal 8%.
+    let correctNPV = -1000;
+    for (let year = 1; year <= 10; year++) {
+      correctNPV += (100 * Math.pow(1.03, year - 1)) / Math.pow(1.08, year);
+    }
+
+    // Wrong (double-counted) version: same nominal cash flows discounted at
+    // the real rate (1.08 / 1.03 - 1).
+    const realRate = 1.08 / 1.03 - 1;
+    let doubleCountedNPV = -1000;
+    for (let year = 1; year <= 10; year++) {
+      doubleCountedNPV += (100 * Math.pow(1.03, year - 1)) / Math.pow(1 + realRate, year);
+    }
+
+    expect(result.npv).toBeCloseTo(correctNPV, 1);
+    expect(result.npv).toBeCloseTo(-244.99, 1);
+    // The fix must move away from the double-counted result.
+    expect(result.npv).not.toBeCloseTo(doubleCountedNPV, 1);
+    expect(Math.abs(result.npv - doubleCountedNPV)).toBeGreaterThan(1);
+  });
+});
+
 describe("performSensitivityAnalysis", () => {
   it("returns base case and sensitivity points", () => {
     const result = performSensitivityAnalysis(BASE_INPUT);
@@ -153,6 +216,46 @@ describe("performSensitivityAnalysis", () => {
     expect(parameters.has("Discount Rate")).toBe(true);
     expect(parameters.has("Degradation Rate")).toBe(true);
     expect(parameters.has("Energy Output")).toBe(true);
+  });
+
+  it("discount rate sensitivity uses additive deltas, not multiplicative multipliers", () => {
+    const input10 = createDefaultFinancialInput(500, 80, { discount_rate: 0.1 });
+    const result = performSensitivityAnalysis(input10);
+    const drPoints = result.sensitivities.filter((s) => s.parameter === "Discount Rate");
+
+    // The "+1%" label means base (0.10) + 0.01 = 0.11, so effective multiplier ≈ 1.10
+    const plus1 = drPoints.find((s) => s.change === "+1%");
+    expect(plus1).toBeDefined();
+    expect(plus1!.multiplier).toBeCloseTo(0.11 / 0.1, 6);
+
+    // The "-2%" label means base (0.10) - 0.02 = 0.08, so effective multiplier = 0.80
+    const minus2 = drPoints.find((s) => s.change === "-2%");
+    expect(minus2).toBeDefined();
+    expect(minus2!.multiplier).toBeCloseTo(0.08 / 0.1, 6);
+
+    // The "+2%" label means base (0.10) + 0.02 = 0.12
+    const plus2 = drPoints.find((s) => s.change === "+2%");
+    expect(plus2).toBeDefined();
+    expect(plus2!.multiplier).toBeCloseTo(0.12 / 0.1, 6);
+
+    // Higher discount rate should reduce NPV
+    expect(minus2!.npv).toBeGreaterThan(plus1!.npv);
+    expect(plus1!.npv).toBeGreaterThan(plus2!.npv);
+  });
+
+  it("discount rate sensitivity is correct for the default 7% base rate too", () => {
+    const result = performSensitivityAnalysis(BASE_INPUT);
+    const drPoints = result.sensitivities.filter((s) => s.parameter === "Discount Rate");
+
+    // Base is 0.07; "+1%" means 0.07 + 0.01 = 0.08 → multiplier ≈ 0.08/0.07 ≈ 1.1429
+    const plus1 = drPoints.find((s) => s.change === "+1%");
+    expect(plus1).toBeDefined();
+    expect(plus1!.multiplier).toBeCloseTo(0.08 / 0.07, 4);
+
+    // "-2%" means 0.07 - 0.02 = 0.05 → multiplier ≈ 0.05/0.07 ≈ 0.7143
+    const minus2 = drPoints.find((s) => s.change === "-2%");
+    expect(minus2).toBeDefined();
+    expect(minus2!.multiplier).toBeCloseTo(0.05 / 0.07, 4);
   });
 });
 

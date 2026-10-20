@@ -1,4 +1,5 @@
 import dotenv from "dotenv";
+import { logger } from "./lib/logger";
 
 dotenv.config();
 
@@ -22,6 +23,22 @@ function numEnv(name: string, fallback: number): number {
   const parsed = parseInt(raw, 10);
   if (isNaN(parsed)) {
     throw new Error(`Environment variable ${name} must be a number, got: "${raw}"`);
+  }
+  return parsed;
+}
+
+/**
+ * Read a strictly-positive integer env var used as a capacity bound.
+ * A missing, non-numeric or non-positive value falls back to `fallback` with a
+ * warning, so a bad value can never disable the bound it configures.
+ */
+function positiveIntEnv(name: string, fallback: number): number {
+  const raw = process.env[name];
+  if (!raw) return fallback;
+  const parsed = parseInt(raw, 10);
+  if (Number.isNaN(parsed) || parsed < 1) {
+    logger.warn(`Invalid ${name}, falling back to default`, { [name]: raw, default: fallback });
+    return fallback;
   }
   return parsed;
 }
@@ -70,80 +87,136 @@ function networkEnv(name: string, fallback: StellarNetwork): StellarNetwork {
   return isStellarNetwork(raw) ? raw : fallback;
 }
 
-export const config = {
-  /** Stellar / Soroban */
-  STELLAR_NETWORK: networkEnv("STELLAR_NETWORK", "testnet"),
-  ADMIN_SECRET_KEY: process.env.ADMIN_SECRET_KEY || "",
-  PROJECT_REGISTRY_CONTRACT_ID: process.env.PROJECT_REGISTRY_CONTRACT_ID || "",
-  RPC_URL: optionalEnv("RPC_URL", "https://soroban-testnet.stellar.org"),
+function buildConfig() {
+  return {
+    /** Stellar / Soroban */
+    STELLAR_NETWORK: networkEnv("STELLAR_NETWORK", "testnet"),
+    ADMIN_SECRET_KEY: process.env.ADMIN_SECRET_KEY || "",
+    PROJECT_REGISTRY_CONTRACT_ID: process.env.PROJECT_REGISTRY_CONTRACT_ID || "",
+    INVESTMENT_VAULT_CONTRACT_ID: process.env.INVESTMENT_VAULT_CONTRACT_ID || "",
+    RPC_URL: optionalEnv("RPC_URL", "https://soroban-testnet.stellar.org"),
 
-  /** HTTP server */
-  PORT: numEnv("PORT", 3001),
-  FRONTEND_URL: optionalEnv("FRONTEND_URL", "http://localhost:3000"),
-  ADMIN_API_KEY: process.env.ADMIN_API_KEY || "",
-  WS_AUTH_TOKEN: process.env.WS_AUTH_TOKEN || "",
+    /** HTTP server */
+    PORT: numEnv("PORT", 3001),
+    FRONTEND_URL: optionalEnv("FRONTEND_URL", "http://localhost:3000"),
+    ADMIN_API_KEY: process.env.ADMIN_API_KEY || "",
+    ADMIN_REQUEST_MAX_AGE_MS: numEnv("ADMIN_REQUEST_MAX_AGE_MS", 300000),
+    INITIAL_ADMIN_USER_ID: process.env.INITIAL_ADMIN_USER_ID || "",
+    WS_AUTH_TOKEN: process.env.WS_AUTH_TOKEN || "",
 
-  /** Connection pool */
-  DB_POOL_MIN: numEnv("DB_POOL_MIN", 2),
-  DB_POOL_MAX: numEnv("DB_POOL_MAX", 10),
-  DB_POOL_ACQUIRE_TIMEOUT_MS: numEnv("DB_POOL_ACQUIRE_TIMEOUT_MS", 5000),
-  DB_POOL_HEALTH_CHECK_INTERVAL_MS: numEnv("DB_POOL_HEALTH_CHECK_INTERVAL_MS", 30000),
+    /** Database connection */
+    DB_HOST: optionalEnv("DB_HOST", "localhost"),
+    DB_PORT: numEnv("DB_PORT", 5432),
+    DB_NAME: optionalEnv("DB_NAME", "heliobond_dev"),
+    DB_USER: optionalEnv("DB_USER", "postgres"),
+    DB_PASSWORD: optionalEnv("DB_PASSWORD", ""),
 
-  /** Circuit breaker */
-  RPC_BREAKER_FAILURE_THRESHOLD: numEnv("CIRCUIT_BREAKER_THRESHOLD", numEnv("RPC_BREAKER_FAILURE_THRESHOLD", 5)),
-  RPC_BREAKER_RECOVERY_TIMEOUT_MS: numEnv("CIRCUIT_BREAKER_COOLDOWN_MS", numEnv("RPC_BREAKER_RECOVERY_TIMEOUT_MS", 30000)),
+    /** Connection pool */
+    DB_POOL_MIN: numEnv("DB_POOL_MIN", 2),
+    DB_POOL_MAX: numEnv("DB_POOL_MAX", 10),
+    DB_POOL_ACQUIRE_TIMEOUT_MS: numEnv("DB_POOL_ACQUIRE_TIMEOUT_MS", 5000),
+    DB_POOL_HEALTH_CHECK_INTERVAL_MS: numEnv("DB_POOL_HEALTH_CHECK_INTERVAL_MS", 30000),
+    DB_ACQUIRE_TIMEOUT_MS: numEnv("DB_ACQUIRE_TIMEOUT_MS", 30000),
+    DB_IDLE_TIMEOUT_MS: numEnv("DB_IDLE_TIMEOUT_MS", 60000),
 
-  /** Transaction retries */
-  TX_MAX_RETRIES: numEnv("TX_MAX_RETRIES", 4),
-  TX_RETRY_BASE_DELAY_MS: numEnv("TX_RETRY_BASE_DELAY_MS", 200),
-  TX_RETRY_MAX_DELAY_MS: numEnv("TX_RETRY_MAX_DELAY_MS", 10000),
+    /** Circuit breaker */
+    RPC_BREAKER_FAILURE_THRESHOLD: numEnv(
+      "CIRCUIT_BREAKER_THRESHOLD",
+      numEnv("RPC_BREAKER_FAILURE_THRESHOLD", 5),
+    ),
+    RPC_BREAKER_RECOVERY_TIMEOUT_MS: numEnv(
+      "CIRCUIT_BREAKER_COOLDOWN_MS",
+      numEnv("RPC_BREAKER_RECOVERY_TIMEOUT_MS", 30000),
+    ),
 
-  /** Stellar transaction polling */
-  POLL_INTERVAL_MS: numEnv("POLL_INTERVAL_MS", 1500),
-  POLL_MAX_ATTEMPTS: numEnv("POLL_MAX_ATTEMPTS", 20),
+    /** Transaction retries */
+    TX_MAX_RETRIES: numEnv("TX_MAX_RETRIES", 10),
+    TX_RETRY_BASE_DELAY_MS: numEnv("TX_RETRY_BASE_DELAY_MS", 200),
+    TX_RETRY_MAX_DELAY_MS: numEnv("TX_RETRY_MAX_DELAY_MS", 10000),
 
-  /** Stellar transaction timeout (seconds) */
-  TX_TIMEOUT_SECONDS: numEnv("TX_TIMEOUT_SECONDS", 30),
+    /** Stellar RPC retries */
+    RPC_MAX_RETRIES: numEnv("RPC_MAX_RETRIES", 3),
+    RPC_RETRY_BASE_MS: numEnv("RPC_RETRY_BASE_MS", 1000),
 
-  /** IoT max power output (kW) */
-  MAX_POWER_KW: numEnv("MAX_POWER_KW", 1000),
+    /** Stellar transaction polling */
+    POLL_INTERVAL_MS: numEnv("POLL_INTERVAL_MS", 1500),
+    POLL_MAX_ATTEMPTS: numEnv("POLL_MAX_ATTEMPTS", 20),
 
-  /** Cron */
-  CRON_TIMEZONE: optionalEnv("CRON_TIMEZONE", "UTC"),
-  CRON_FAILURE_THRESHOLD: floatEnv("CRON_FAILURE_THRESHOLD", 0.5),
+    /** Stellar transaction timeout (seconds) */
+    TX_TIMEOUT_SECONDS: numEnv("TX_TIMEOUT_SECONDS", 30),
 
-  /** Graceful shutdown */
-  SHUTDOWN_TIMEOUT_MS: numEnv("SHUTDOWN_TIMEOUT_MS", 30000),
+    /** IoT max power output (kW) */
+    MAX_POWER_KW: numEnv("MAX_POWER_KW", 1000),
 
-  /** Logging */
-  LOG_LEVEL: optionalEnv("LOG_LEVEL", ""),
-  NODE_ENV: optionalEnv("NODE_ENV", "development"),
+    /** Idempotency */
+    IDEMPOTENCY_TTL_MS: numEnv("IDEMPOTENCY_TTL_MS", 3_600_000),
 
-  /** Rate limiting */
-  RATE_LIMIT_WINDOW_MS: numEnv("RATE_LIMIT_WINDOW_MS", 60000),
-  RATE_LIMIT_MAX: numEnv("RATE_LIMIT_MAX", 100),
-  RATE_LIMIT_ADMIN_WINDOW_MS: numEnv("RATE_LIMIT_ADMIN_WINDOW_MS", 60000),
-  RATE_LIMIT_ADMIN_MAX: numEnv("RATE_LIMIT_ADMIN_MAX", 20),
+    /** Cron */
+    CRON_TIMEZONE: optionalEnv("CRON_TIMEZONE", "UTC"),
+    CRON_FAILURE_THRESHOLD: floatEnv("CRON_FAILURE_THRESHOLD", 0.5),
 
-  /** IP Whitelist */
-  ADMIN_IP_WHITELIST: optionalEnv("ADMIN_IP_WHITELIST", ""),
-  ADMIN_IP_WHITELIST_BYPASS_PRIVATE: optionalEnv("ADMIN_IP_WHITELIST_BYPASS_PRIVATE", "true"),
+    /** Graceful shutdown */
+    SHUTDOWN_TIMEOUT_MS: numEnv("SHUTDOWN_TIMEOUT_MS", 30000),
 
-  /** Request Signing */
-  REQUEST_SIGNING_SECRET: optionalEnv("REQUEST_SIGNING_SECRET", ""),
+    /** Logging */
+    LOG_LEVEL: optionalEnv("LOG_LEVEL", ""),
+    NODE_ENV: optionalEnv("NODE_ENV", "development"),
 
-  /** APM */
-  APM_PROVIDER: optionalEnv("APM_PROVIDER", "none"),
+    /** Rate limiting */
+    RATE_LIMIT_WINDOW_MS: numEnv("RATE_LIMIT_WINDOW_MS", 60000),
+    RATE_LIMIT_MAX: numEnv("RATE_LIMIT_MAX", 100),
+    RATE_LIMIT_ADMIN_WINDOW_MS: numEnv("RATE_LIMIT_ADMIN_WINDOW_MS", 60000),
+    RATE_LIMIT_ADMIN_MAX: numEnv("RATE_LIMIT_ADMIN_MAX", 20),
 
-  /** CSRF */
-  CORS_ORIGINS: optionalEnv("CORS_ORIGINS", ""),
+    /** IP Whitelist & Proxy Trust */
+    TRUST_PROXY: optionalEnv("TRUST_PROXY", "false"),
+    ADMIN_IP_WHITELIST: optionalEnv("ADMIN_IP_WHITELIST", ""),
+    ADMIN_IP_WHITELIST_BYPASS_PRIVATE: optionalEnv("ADMIN_IP_WHITELIST_BYPASS_PRIVATE", "true"),
 
-  /** Body size limit */
-  BODY_SIZE_LIMIT: optionalEnv("BODY_SIZE_LIMIT", "100kb"),
+    /** Request Signing */
+    REQUEST_SIGNING_SECRET: optionalEnv("REQUEST_SIGNING_SECRET", ""),
 
-  /** Secrets Management */
-  SECRETS_PROVIDER: optionalEnv("SECRETS_PROVIDER", "env"),
-} as const;
+    /** APM */
+    APM_PROVIDER: optionalEnv("APM_PROVIDER", "none"),
+
+    /** CSRF */
+    CORS_ORIGINS: optionalEnv("CORS_ORIGINS", ""),
+
+    /** Body size limit */
+    BODY_SIZE_LIMIT: optionalEnv("BODY_SIZE_LIMIT", "100kb"),
+
+    /** Frontend telemetry (#770) */
+    TELEMETRY_BODY_SIZE_LIMIT: optionalEnv("TELEMETRY_BODY_SIZE_LIMIT", "64kb"),
+    TELEMETRY_OTLP_ENABLED: optionalEnv("TELEMETRY_OTLP_ENABLED", "false"),
+
+    /** Secrets Management */
+    SECRETS_PROVIDER: optionalEnv("SECRETS_PROVIDER", "env"),
+
+    /** Vault event indexer */
+    VAULT_EVENT_INDEXER_START_LEDGER: numEnv("VAULT_EVENT_INDEXER_START_LEDGER", 0),
+    VAULT_EVENT_INDEXER_ENABLED: optionalEnv("VAULT_EVENT_INDEXER_ENABLED", "false"),
+
+    /** gRPC */
+    GRPC_PORT: numEnv("GRPC_PORT", 50051),
+
+    /** RPC Outage Detection */
+    RPC_OUTAGE_THRESHOLD_MS: numEnv("RPC_OUTAGE_THRESHOLD_MS", 300000),
+
+    /** Health Check */
+    HEALTH_CHECK_TIMEOUT_MS: numEnv("HEALTH_CHECK_TIMEOUT_MS", 1000),
+
+    /** Batch Job Store */
+    BATCH_JOB_TTL_MS: numEnv("BATCH_JOB_TTL_MS", 3_600_000),
+    BATCH_JOB_MAX_SIZE: numEnv("BATCH_JOB_MAX_SIZE", 1000),
+
+    /** Webhook Store */
+    WEBHOOK_CLEANUP_INTERVAL_MS: numEnv("WEBHOOK_CLEANUP_INTERVAL_MS", 3_600_000),
+    WEBHOOK_STALE_THRESHOLD_MS: numEnv("WEBHOOK_STALE_THRESHOLD_MS", 86_400_000),
+    VAULT_EVENT_INDEXER_MAX_EVENTS: positiveIntEnv("VAULT_EVENT_INDEXER_MAX_EVENTS", 1000),
+  } as const;
+}
+
+export const config = buildConfig();
 
 /**
  * The shape of the resolved application configuration. Exported so consumers
@@ -167,9 +240,17 @@ export function validateRequiredEnv(): void {
 
 /**
  * Backward-compatible initializer used by src/index.ts.
- * Loads dotenv, validates required vars, and returns the config object.
+ * Loads dotenv, validates required vars, and returns a freshly resolved
+ * config so callers see the current process.env rather than the snapshot
+ * captured when the module was imported.
  */
 export function initEnv() {
   validateRequiredEnv();
-  return config;
+  // Initialize API key roles from environment variables
+  // This must be called before any routes that use role-based auth
+  // eslint-disable-next-line @typescript-eslint/no-require-imports
+  const { loadApiKeysFromEnv } = require("./lib/apiKeyRoles");
+  loadApiKeysFromEnv();
+
+  return buildConfig();
 }

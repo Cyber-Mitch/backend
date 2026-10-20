@@ -3,6 +3,7 @@ import path from "path";
 import fs from "fs";
 import { logger } from "./logger";
 import config from "../knexfile";
+import { config as appConfig } from "../config";
 
 let _knex: Knex | null = null;
 
@@ -51,7 +52,7 @@ async function getAppliedMigrations(knexInstance: Knex): Promise<string[]> {
   const hasTable = await knexInstance.schema.hasTable("knex_migrations");
   if (!hasTable) return [];
   const rows = await knexInstance("knex_migrations").select("name").orderBy("id", "asc");
-  return rows.map((r: any) => r.name);
+  return rows.map((r: { name: string }) => r.name);
 }
 
 /**
@@ -108,10 +109,12 @@ export async function runMigrations(): Promise<MigrationResult> {
     if (migrations.length === 0) {
       logger.info("[migrations] already up to date");
     }
-  } catch (err: any) {
+  } catch (err) {
     result.success = false;
-    result.errors.push(err.message);
-    logger.error("[migrations] failed", { error: err.message });
+    result.errors.push(err instanceof Error ? err.message : String(err));
+    logger.error("[migrations] failed", {
+      error: err instanceof Error ? err.message : String(err),
+    });
     throw err;
   }
 
@@ -138,10 +141,12 @@ export async function rollbackMigration(): Promise<MigrationResult> {
     if (migrations.length === 0) {
       logger.info("[migrations] nothing to rollback");
     }
-  } catch (err: any) {
+  } catch (err) {
     result.success = false;
-    result.errors.push(err.message);
-    logger.error("[migrations] rollback failed", { error: err.message });
+    result.errors.push(err instanceof Error ? err.message : String(err));
+    logger.error("[migrations] rollback failed", {
+      error: err instanceof Error ? err.message : String(err),
+    });
     throw err;
   }
 
@@ -166,10 +171,12 @@ export async function rollbackAll(): Promise<MigrationResult> {
         logger.info("[migrations] rolled back batch", { batch: batchNo, migrations });
       }
     }
-  } catch (err: any) {
+  } catch (err) {
     result.success = false;
-    result.errors.push(err.message);
-    logger.error("[migrations] full rollback failed", { error: err.message });
+    result.errors.push(err instanceof Error ? err.message : String(err));
+    logger.error("[migrations] full rollback failed", {
+      error: err instanceof Error ? err.message : String(err),
+    });
     throw err;
   }
 
@@ -244,7 +251,7 @@ export async function getMigrationHealth(): Promise<{
   missing_files: string[];
 }> {
   const fallback = {
-    status: "healthy" as const,
+    status: "unhealthy" as const,
     applied_count: 0,
     pending_count: 0,
     last_migration: null,
@@ -275,11 +282,22 @@ export async function getMigrationHealth(): Promise<{
 
   try {
     const timeout = new Promise<never>((_, reject) => {
-      const timer = setTimeout(() => reject(new Error("Migration health check timeout")), 1000);
+      const timer = setTimeout(
+        () =>
+          reject(
+            new Error(
+              `Migration health check timeout after ${appConfig.HEALTH_CHECK_TIMEOUT_MS}ms`,
+            ),
+          ),
+        appConfig.HEALTH_CHECK_TIMEOUT_MS,
+      );
       if (typeof timer.unref === "function") timer.unref();
     });
     return await Promise.race([check(), timeout]);
-  } catch (err: any) {
+  } catch (err) {
+    logger.error("[migrations] health check failed", {
+      error: err instanceof Error ? err.message : String(err),
+    });
     return fallback;
   }
 }
