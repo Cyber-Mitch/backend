@@ -7,9 +7,18 @@ import {
   validateCriteria,
   COMPARISON_METRICS,
 } from "../lib/comparison";
-import { badRequest, maxProjectId } from "../middleware/errors";
+import { projectExists } from "../lib/registry";
+import { ApiError, badRequest, maxProjectId } from "../middleware/errors";
 
 const router = Router();
+
+async function validateProjectIds(ids: number[]): Promise<void> {
+  for (const id of ids) {
+    if (!(await projectExists(id))) {
+      throw new ApiError(404, "not_found", `Project ${id} not found`);
+    }
+  }
+}
 
 function parseIds(raw: string | undefined): number[] {
   if (!raw) throw badRequest("ids query parameter is required (comma-separated)");
@@ -29,7 +38,8 @@ function parseIds(raw: string | undefined): number[] {
 router.get("/", async (req: Request, res: Response, next: NextFunction) => {
   try {
     const ids = parseIds(req.query.ids as string | undefined);
-    const result = compareProjects(ids);
+    await validateProjectIds(ids);
+    const result = await compareProjects(ids);
     res.json(result);
   } catch (error) {
     next(error);
@@ -43,12 +53,13 @@ router.get("/metrics", (_req: Request, res: Response) => {
 router.get("/ranking", async (req: Request, res: Response, next: NextFunction) => {
   try {
     const ids = parseIds(req.query.ids as string | undefined);
+    await validateProjectIds(ids);
     const criteria = (req.query.criteria as string) ?? "combined_score";
 
     const validationError = validateCriteria(criteria);
     if (validationError) return next(badRequest(validationError));
 
-    const result = generateRanking(ids, criteria);
+    const result = await generateRanking(ids, criteria);
     res.json(result);
   } catch (error) {
     next(error);
@@ -58,10 +69,11 @@ router.get("/ranking", async (req: Request, res: Response, next: NextFunction) =
 router.get("/export", async (req: Request, res: Response, next: NextFunction) => {
   try {
     const ids = parseIds(req.query.ids as string | undefined);
+    await validateProjectIds(ids);
     const format = (req.query.format as string) ?? "csv";
 
     if (format === "csv") {
-      const result = compareProjects(ids);
+      const result = await compareProjects(ids);
       const csv = comparisonToCsv(result);
       res.setHeader("Content-Type", "text/csv");
       res.setHeader("Content-Disposition", `attachment; filename="comparison-${ids.join("-")}.csv"`);
@@ -77,12 +89,13 @@ router.get("/export", async (req: Request, res: Response, next: NextFunction) =>
 router.get("/ranking/export", async (req: Request, res: Response, next: NextFunction) => {
   try {
     const ids = parseIds(req.query.ids as string | undefined);
+    await validateProjectIds(ids);
     const criteria = (req.query.criteria as string) ?? "combined_score";
 
     const validationError = validateCriteria(criteria);
     if (validationError) return next(badRequest(validationError));
 
-    const ranking = generateRanking(ids, criteria);
+    const ranking = await generateRanking(ids, criteria);
     const csv = rankingToCsv(ranking);
     res.setHeader("Content-Type", "text/csv");
     res.setHeader("Content-Disposition", `attachment; filename="ranking-${criteria}.csv"`);

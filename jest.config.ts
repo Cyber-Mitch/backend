@@ -9,7 +9,9 @@ export default {
   // default node_modules pattern.
   transformIgnorePatterns: [
     "node_modules/(?!(@stellar|@exodus|@noble|uint8array-extras|eventsource|smol-toml)/)",
+    "<rootDir>/dist/",
   ],
+  modulePathIgnorePatterns: ["<rootDir>/dist/"],
   testEnvironment: "node",
   testMatch: ["**/__tests__/**/*.test.ts"],
   clearMocks: true,

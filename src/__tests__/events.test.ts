@@ -1,4 +1,5 @@
 import { scoreEvents, SCORE_UPDATE_EVENT } from "../lib/events";
+import { broadcastScoreUpdate } from "../lib/websocket";
 
 describe("Events Module", () => {
   beforeEach(() => {
@@ -63,6 +64,21 @@ describe("Events Module", () => {
       }).toThrow("Handler error");
 
       expect(errorHandler).toHaveBeenCalled();
+    });
+
+    it("broadcastScoreUpdate isolates listener failures and still dispatches the update", () => {
+      const badHandler = jest.fn(() => {
+        throw new Error("listener failure");
+      });
+      const goodHandler = jest.fn();
+      const update = { project_id: 111, credit_quality: 75, green_impact: 80, timestamp: Date.now() };
+
+      scoreEvents.on(SCORE_UPDATE_EVENT, badHandler);
+      scoreEvents.on(SCORE_UPDATE_EVENT, goodHandler);
+
+      expect(() => broadcastScoreUpdate(update)).not.toThrow();
+      expect(badHandler).toHaveBeenCalledWith(update);
+      expect(goodHandler).toHaveBeenCalledWith(update);
     });
 
     it("allows multiple successful listeners to execute", () => {

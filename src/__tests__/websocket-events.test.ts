@@ -167,6 +167,24 @@ describe("/ws/events browser stream (#767)", () => {
     delete process.env.WS_EVENTS_MAX_PER_IP;
   });
 
+  it("rejects oversized control frames before JSON parsing", async () => {
+    const url = `ws://127.0.0.1:${port(server)}/ws`;
+    const ws = await connect(url);
+    const payload = JSON.stringify({
+      action: "subscribe",
+      project_ids: Array.from({ length: 50_000 }, (_, i) => i + 1),
+    });
+
+    const { code, reason } = await new Promise<{ code: number; reason: string }>((resolve) => {
+      ws.once("close", (code, reason) => resolve({ code, reason: reason.toString() }));
+      ws.send(payload);
+    });
+
+    expect(code).toBe(1009);
+    expect(reason).toBe("");
+    ws.terminate();
+  });
+
   it("the authenticated /ws feed still rejects unauthenticated upgrade requests", async () => {
     // `authenticate` returns true in dev/test when `WS_AUTH_TOKEN` is
     // unset; force production semantics so the reject-on-no-bearer path
