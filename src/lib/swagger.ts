@@ -1,3 +1,12 @@
+const errorResponse = (description: string) => ({
+  description,
+  content: {
+    "application/json": {
+      schema: { $ref: "#/components/schemas/Error" },
+    },
+  },
+});
+
 export const openApiSpec = {
   openapi: "3.0.3",
   info: {
@@ -31,8 +40,16 @@ export const openApiSpec = {
     schemas: {
       Error: {
         type: "object",
+        required: ["error"],
         properties: {
-          error: { type: "string" },
+          error: {
+            type: "object",
+            required: ["code", "message"],
+            properties: {
+              code: { type: "string" },
+              message: { type: "string" },
+            },
+          },
         },
       },
       Project: {
@@ -163,6 +180,10 @@ export const openApiSpec = {
         ],
         responses: {
           200: { description: "Solar metrics" },
+          400: errorResponse("Bad request"),
+          404: errorResponse("Project not found"),
+          429: errorResponse("Too many requests"),
+          500: errorResponse("Internal server error"),
         },
       },
     },
@@ -175,6 +196,10 @@ export const openApiSpec = {
         ],
         responses: {
           200: { description: "Satellite metrics" },
+          400: errorResponse("Bad request"),
+          404: errorResponse("Project not found"),
+          429: errorResponse("Too many requests"),
+          500: errorResponse("Internal server error"),
         },
       },
     },
@@ -246,6 +271,7 @@ export const openApiSpec = {
               },
             },
           },
+          500: errorResponse("Internal server error"),
         },
       },
     },
@@ -265,10 +291,10 @@ export const openApiSpec = {
               },
             },
           },
-          404: {
-            description: "Not found",
-            content: { "application/json": { schema: { $ref: "#/components/schemas/Error" } } },
-          },
+          400: errorResponse("Bad request"),
+          404: errorResponse("Project not found"),
+          429: errorResponse("Too many requests"),
+          500: errorResponse("Internal server error"),
         },
       },
     },
@@ -294,6 +320,10 @@ export const openApiSpec = {
         ],
         responses: {
           200: { description: "Score history entries or CSV download" },
+          400: errorResponse("Bad request"),
+          404: errorResponse("Project not found"),
+          429: errorResponse("Too many requests"),
+          500: errorResponse("Internal server error"),
         },
       },
     },
@@ -307,6 +337,10 @@ export const openApiSpec = {
             description: "Trend result",
             content: { "application/json": { schema: { $ref: "#/components/schemas/Trend" } } },
           },
+          400: errorResponse("Bad request"),
+          404: errorResponse("Project not found"),
+          429: errorResponse("Too many requests"),
+          500: errorResponse("Internal server error"),
         },
       },
     },
@@ -370,7 +404,11 @@ export const openApiSpec = {
       get: {
         summary: "Get portfolio summary",
         tags: ["Portfolio"],
-        responses: { 200: { description: "Portfolio metrics" } },
+        responses: {
+          200: { description: "Portfolio metrics" },
+          429: errorResponse("Too many requests"),
+          500: errorResponse("Internal server error"),
+        },
       },
     },
     "/admin/score-update": {
@@ -380,7 +418,10 @@ export const openApiSpec = {
         security: [{ UserId: [] }],
         responses: {
           200: { description: "Score updated" },
-          401: { description: "Unauthorized" },
+          400: errorResponse("Bad request"),
+          401: errorResponse("Unauthorized"),
+          429: errorResponse("Too many requests"),
+          500: errorResponse("Internal server error"),
         },
       },
     },
@@ -394,7 +435,10 @@ export const openApiSpec = {
             description: "Job accepted",
             content: { "application/json": { schema: { $ref: "#/components/schemas/BatchJob" } } },
           },
-          401: { description: "Unauthorized" },
+          400: errorResponse("Bad request"),
+          401: errorResponse("Unauthorized"),
+          429: errorResponse("Too many requests"),
+          500: errorResponse("Internal server error"),
         },
       },
     },
@@ -409,7 +453,10 @@ export const openApiSpec = {
             description: "Job status",
             content: { "application/json": { schema: { $ref: "#/components/schemas/BatchJob" } } },
           },
-          404: { description: "Job not found" },
+          401: errorResponse("Unauthorized"),
+          404: errorResponse("Job not found"),
+          429: errorResponse("Too many requests"),
+          500: errorResponse("Internal server error"),
         },
       },
     },
@@ -418,7 +465,13 @@ export const openApiSpec = {
         summary: "List all role assignments",
         tags: ["Roles"],
         security: [{ UserId: [] }],
-        responses: { 200: { description: "Array of role entries" } },
+        responses: {
+          200: { description: "Array of role entries" },
+          401: errorResponse("Unauthorized"),
+          403: errorResponse("Forbidden"),
+          429: errorResponse("Too many requests"),
+          500: errorResponse("Internal server error"),
+        },
       },
       post: {
         summary: "Assign a role to a user",
@@ -434,8 +487,11 @@ export const openApiSpec = {
         },
         responses: {
           201: { description: "Role assigned" },
-          400: { description: "Invalid role" },
-          403: { description: "Insufficient permissions" },
+          400: errorResponse("Invalid role"),
+          401: errorResponse("Unauthorized"),
+          403: errorResponse("Insufficient permissions"),
+          429: errorResponse("Too many requests"),
+          500: errorResponse("Internal server error"),
         },
       },
     },
@@ -447,7 +503,11 @@ export const openApiSpec = {
         parameters: [{ name: "userId", in: "path", required: true, schema: { type: "string" } }],
         responses: {
           200: { description: "Role removed" },
-          404: { description: "User not found" },
+          401: errorResponse("Unauthorized"),
+          403: errorResponse("Forbidden"),
+          404: errorResponse("User not found"),
+          429: errorResponse("Too many requests"),
+          500: errorResponse("Internal server error"),
         },
       },
     },
@@ -456,7 +516,13 @@ export const openApiSpec = {
         summary: "List registered webhooks",
         tags: ["Webhooks"],
         security: [{ UserId: [] }],
-        responses: { 200: { description: "Array of webhook configs" } },
+        responses: {
+          200: { description: "Array of webhook configs" },
+          401: errorResponse("Unauthorized"),
+          403: errorResponse("Forbidden"),
+          429: errorResponse("Too many requests"),
+          500: errorResponse("Internal server error"),
+        },
       },
       post: {
         summary: "Register a new webhook",
@@ -482,6 +548,11 @@ export const openApiSpec = {
             description: "Webhook registered",
             content: { "application/json": { schema: { $ref: "#/components/schemas/Webhook" } } },
           },
+          400: errorResponse("Bad request"),
+          401: errorResponse("Unauthorized"),
+          403: errorResponse("Forbidden"),
+          429: errorResponse("Too many requests"),
+          500: errorResponse("Internal server error"),
         },
       },
     },
@@ -493,7 +564,10 @@ export const openApiSpec = {
         parameters: [{ name: "id", in: "path", required: true, schema: { type: "string" } }],
         responses: {
           200: { description: "Webhook config" },
-          404: { description: "Not found" },
+          401: errorResponse("Unauthorized"),
+          404: errorResponse("Webhook not found"),
+          429: errorResponse("Too many requests"),
+          500: errorResponse("Internal server error"),
         },
       },
       delete: {
@@ -503,7 +577,10 @@ export const openApiSpec = {
         parameters: [{ name: "id", in: "path", required: true, schema: { type: "string" } }],
         responses: {
           200: { description: "Webhook removed" },
-          404: { description: "Not found" },
+          401: errorResponse("Unauthorized"),
+          404: errorResponse("Webhook not found"),
+          429: errorResponse("Too many requests"),
+          500: errorResponse("Internal server error"),
         },
       },
     },

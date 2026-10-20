@@ -30,7 +30,7 @@ describe("gRPC Service Integration", () => {
   let consumerKey: string;
   const PORT = 50055;
 
-  beforeAll((done) => {
+  beforeAll(async () => {
     process.env.ADMIN_API_KEY = "grpc-admin-key";
     server = startGrpcServer(PORT);
 
@@ -38,8 +38,16 @@ describe("gRPC Service Integration", () => {
       `localhost:${PORT}`,
       grpc.credentials.createInsecure(),
     );
-    // Give the server a small moment to bind
-    setTimeout(done, 500);
+
+    await new Promise<void>((resolve, reject) => {
+      client.waitForReady(Date.now() + 5000, (err?: Error) => {
+        if (err) {
+          reject(err);
+          return;
+        }
+        resolve();
+      });
+    });
   });
 
   afterAll((done) => {
@@ -119,28 +127,61 @@ describe("gRPC Service Integration", () => {
     });
   });
 
-  it("should stream project scores", (done) => {
+  it("should stream project scores", async () => {
     const meta = new grpc.Metadata();
     meta.add("authorization", `Bearer grpc-admin-key`);
 
     const stream = client.StreamProjectScores({}, meta);
     const received: any[] = [];
 
-    stream.on("error", () => {});
+    const firstData = new Promise<any>((resolve, reject) => {
+      stream.on("error", (err: any) => {
+        // Ignore cancellation error since we cancelled it ourselves
+        if (err.code !== grpc.status.CANCELLED) {
+          reject(err);
+        }
+      });
 
-    stream.on("data", (data: any) => {
-      received.push(data);
-      if (received.length === 1) {
-        expect(received[0].project_id).toBe(2);
-        stream.cancel();
-        setTimeout(done, 50);
-      }
+      stream.on("data", (data: any) => {
+        received.push(data);
+        if (received.length === 1) {
+          resolve(data);
+        }
+      });
     });
 
-    // Simulate event emit in the background
-    setTimeout(() => {
-      scoreEvents.emit(SCORE_UPDATE_EVENT, { project_id: 2 });
-    }, 100);
+    await new Promise<void>((resolve) => {
+      const waitForListener = () => {
+        if (scoreEvents.listenerCount(SCORE_UPDATE_EVENT) > 0) {
+          resolve();
+          return;
+        }
+        setImmediate(waitForListener);
+      };
+      waitForListener();
+    });
+
+    scoreEvents.emit(SCORE_UPDATE_EVENT, { project_id: 2 });
+
+    const payload = await firstData;
+    expect(payload.project_id).toBe(2);
+    stream.cancel();
+  });
+
+  it("should not leak internal error details in unary responses", (done) => {
+    const meta = new grpc.Metadata();
+    meta.add("x-api-key", consumerKey);
+    (scoring.computeScores as jest.Mock).mockImplementation(() => {
+      throw new Error("SQLSTATE=42703: suspicious table name from internal DB");
+    });
+
+    client.GetProjectScore({ project_id: 1 }, meta, (err: any, response: any) => {
+      expect(err).toBeDefined();
+      expect(err.code).toBe(grpc.status.INTERNAL);
+      expect(err.details).toBe("Internal server error");
+      expect(response).toBeUndefined();
+      done();
+    });
   });
 
   it("should handle bidirectional chat project scores", (done) => {

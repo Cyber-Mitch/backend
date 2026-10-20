@@ -1,4 +1,5 @@
 import request from "supertest";
+import type { Response } from "supertest";
 import express, { Express } from "express";
 import batchRouter from "../routes/batch";
 import { errorHandler } from "../middleware/errors";
@@ -82,13 +83,20 @@ describe("batch routes", () => {
       .expect(202);
 
     const batchId = create.body.batch_id;
-    // Give the async job a tick to start
-    await new Promise((r) => setTimeout(r, 50));
 
-    const status = await request(app).get(`/api/admin/batch/${batchId}/status`).expect(200);
+    let statusResponse: Response | undefined;
+    for (let attempt = 0; attempt < 25; attempt++) {
+      statusResponse = await request(app).get(`/api/admin/batch/${batchId}/status`);
+      if (statusResponse.status === 200 && statusResponse.body.progress?.total === 1) {
+        break;
+      }
+      await Promise.resolve();
+    }
 
-    expect(status.body.batch_id).toBe(batchId);
-    expect(status.body.progress).toHaveProperty("total", 1);
+    expect(statusResponse).toBeDefined();
+    expect(statusResponse!.status).toBe(200);
+    expect(statusResponse!.body.batch_id).toBe(batchId);
+    expect(statusResponse!.body.progress).toHaveProperty("total", 1);
   });
 });
 

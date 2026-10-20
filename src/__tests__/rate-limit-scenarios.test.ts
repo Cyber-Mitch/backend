@@ -41,13 +41,19 @@ describe("rate limiting scenarios", () => {
   });
 
   it("after window reset → requests succeed again", async () => {
-    const app = buildApp(1, 200);
-    await request(app).get("/ping").expect(200);
-    await request(app).get("/ping").expect(429);
+    jest.useFakeTimers();
 
-    await new Promise((r) => setTimeout(r, 250));
+    try {
+      const app = buildApp(1, 50);
+      await request(app).get("/ping").expect(200);
+      await request(app).get("/ping").expect(429);
 
-    const res = await request(app).get("/ping").expect(200);
-    expect(res.body).toEqual({ ok: true });
+      await jest.advanceTimersByTimeAsync(60);
+
+      const res = await request(app).get("/ping").expect(200);
+      expect(res.body).toEqual({ ok: true });
+    } finally {
+      jest.useRealTimers();
+    }
   });
 });

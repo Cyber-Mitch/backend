@@ -98,10 +98,11 @@ async function getProjectScore(
 
     const data = getProjectDetails(project_id);
     callback(null, data);
-  } catch (error) {
+  } catch (error: unknown) {
+    logger.error("[gRPC] GetProjectScore failed", logger.formatError(error));
     callback({
       code: grpc.status.INTERNAL,
-      details: error instanceof Error ? error.message : "Internal server error",
+      details: "Internal server error",
     });
   }
 }
@@ -120,11 +121,11 @@ function streamProjectScores(call: grpc.ServerWritableStream<any, any>) {
     try {
       const details = getProjectDetails(update.project_id);
       call.write(details);
-    } catch (err) {
+    } catch (error) {
       logger.error("[gRPC Stream] failed to send project details", {
         stream_type: "streamProjectScores",
         project_id: update.project_id,
-        ...logger.formatError(err),
+        ...logger.formatError(error),
       });
     }
   };
@@ -181,12 +182,16 @@ function chatProjectScores(call: grpc.ServerDuplexStream<any, any>) {
 
       const details = getProjectDetails(project_id);
       call.write(details);
-    } catch (err) {
+    } catch (error: unknown) {
       logger.error("[gRPC Chat] data processing error", {
         stream_type: "chatProjectScores",
-        project_id: project_id,
-        ...logger.formatError(err),
+        project_id,
+        ...logger.formatError(error),
       });
+      const err = new Error("Internal server error") as grpc.ServiceError;
+      err.code = grpc.status.INTERNAL;
+      err.details = "Internal server error";
+      call.destroy(err);
     }
   });
 
