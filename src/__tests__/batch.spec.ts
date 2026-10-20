@@ -27,8 +27,15 @@ describe("batch routes", () => {
     app = buildApp();
     jest.clearAllMocks();
 
-    (iot.getSolarData as jest.Mock).mockReturnValue({ efficiency_pct: 80, power_output_kw: 400, max_power_kw: 1000 });
-    (iot.getSatelliteData as jest.Mock).mockReturnValue({ forest_density_pct: 50, ndvi_score: 0.5 });
+    (iot.getSolarData as jest.Mock).mockReturnValue({
+      efficiency_pct: 80,
+      power_output_kw: 400,
+      max_power_kw: 1000,
+    });
+    (iot.getSatelliteData as jest.Mock).mockReturnValue({
+      forest_density_pct: 50,
+      ndvi_score: 0.5,
+    });
     (scoring.computeScores as jest.Mock).mockReturnValue({ credit_quality: 80, green_impact: 65 });
     (registry.updateImpactScore as jest.Mock).mockResolvedValue("tx-batch");
     (registry.getTotalProjects as jest.Mock).mockResolvedValue(3);
@@ -49,10 +56,7 @@ describe("batch routes", () => {
   });
 
   it("POST /api/admin/batch/score-update — uses all projects when no ids given", async () => {
-    const res = await request(app)
-      .post("/api/admin/batch/score-update")
-      .send({})
-      .expect(202);
+    const res = await request(app).post("/api/admin/batch/score-update").send({}).expect(202);
     expect(res.body.total).toBe(3);
   });
 
@@ -64,9 +68,7 @@ describe("batch routes", () => {
   });
 
   it("GET /api/admin/batch/:id/status — 404 for unknown batch", async () => {
-    await request(app)
-      .get("/api/admin/batch/unknown-id/status")
-      .expect(404);
+    await request(app).get("/api/admin/batch/unknown-id/status").expect(404);
   });
 
   it("GET /api/admin/batch/:id/status — returns progress after creation", async () => {
@@ -76,14 +78,19 @@ describe("batch routes", () => {
       .expect(202);
 
     const batchId = create.body.batch_id;
-    // Give the async job a tick to start
-    await new Promise((r) => setTimeout(r, 50));
 
-    const status = await request(app)
-      .get(`/api/admin/batch/${batchId}/status`)
-      .expect(200);
+    let statusResponse: Awaited<ReturnType<typeof request>> | undefined;
+    for (let attempt = 0; attempt < 25; attempt++) {
+      statusResponse = await request(app).get(`/api/admin/batch/${batchId}/status`);
+      if (statusResponse.status === 200 && statusResponse.body.progress?.total === 1) {
+        break;
+      }
+      await Promise.resolve();
+    }
 
-    expect(status.body.batch_id).toBe(batchId);
-    expect(status.body.progress).toHaveProperty("total", 1);
+    expect(statusResponse).toBeDefined();
+    expect(statusResponse!.status).toBe(200);
+    expect(statusResponse!.body.batch_id).toBe(batchId);
+    expect(statusResponse!.body.progress).toHaveProperty("total", 1);
   });
 });

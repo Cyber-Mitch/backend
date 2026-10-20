@@ -51,7 +51,9 @@ describe("OpenAPI spec validity (#281)", () => {
     });
 
     it("documents individual project endpoint", () => {
-      const match = paths.find((p) => p.includes("projects") && p.includes("{id}") && !p.includes("history"));
+      const match = paths.find(
+        (p) => p.includes("projects") && p.includes("{id}") && !p.includes("history"),
+      );
       expect(match).toBeDefined();
     });
 
@@ -109,6 +111,14 @@ describe("OpenAPI spec validity (#281)", () => {
 
     it("defines Error schema", () => {
       expect(schemas.Error).toBeDefined();
+      expect(schemas.Error.properties.error.type).toBe("object");
+      expect(schemas.Error.properties.error.properties.code.type).toBe("string");
+      expect(schemas.Error.properties.error.properties.message.type).toBe("string");
+    });
+
+    it("documents common error responses", () => {
+      const projectGet = openApiSpec.paths["/projects/{id}"].get.responses;
+      expect(Object.keys(projectGet)).toEqual(expect.arrayContaining(["400", "404", "429", "500"]));
     });
 
     it("defines Project schema", () => {
