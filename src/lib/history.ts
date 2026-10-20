@@ -120,18 +120,106 @@ export function getHistory(
   });
 }
 
+/**
+ * Threshold (in combined score points) below which a fitted trend counts as
+ * flat. Matches the historic endpoint-delta threshold.
+ */
+const TREND_THRESHOLD = 2;
+
+/**
+ * Least-squares slope of `values` against sample order. Sample index rather
+ * than timestamp avoids extreme numeric values for epoch-millisecond inputs.
+ */
+function leastSquaresSlope(values: number[]): number {
+  const n = values.length;
+  const meanX = (n - 1) / 2;
+  const meanY = values.reduce((acc, value) => acc + value, 0) / n;
+
+  let numerator = 0;
+  let denominator = 0;
+  for (let i = 0; i < n; i++) {
+    const dx = i - meanX;
+    numerator += dx * (values[i] - meanY);
+    denominator += dx * dx;
+  }
+
+  return denominator === 0 ? 0 : numerator / denominator;
+}
+
+/**
+ * Classify the direction of a score series.
+ *
+ * Unlike the previous endpoint-only comparison, every sample contributes:
+ *
+ * 1. A least-squares slope is fitted over the combined score
+ *    (`credit_quality + green_impact`). If the fitted change across the whole
+ *    window exceeds `TREND_THRESHOLD`, the series is improving/declining.
+ * 2. Otherwise, if the series both rose and fell by more than
+ *    `TREND_THRESHOLD`, it is volatile rather than flat; the trend follows the
+ *    most recent non-zero step, so a rise-then-collapse reads as declining.
+ * 3. Otherwise the series is stable.
+ *
+ * The `*_delta` fields remain endpoint deltas for backwards compatibility.
+ */
 export function computeTrend(entries: ScoreEntry[]): TrendAnalysis {
   if (entries.length < 2) {
-    return { trend: "stable", credit_quality_delta: 0, green_impact_delta: 0, sample_count: entries.length };
+    return {
+      trend: "stable",
+      credit_quality_delta: 0,
+      green_impact_delta: 0,
+      sample_count: entries.length,
+    };
   }
   const sorted = [...entries].sort((a, b) => a.timestamp - b.timestamp);
   const first = sorted[0];
   const last = sorted[sorted.length - 1];
   const cqDelta = last.credit_quality - first.credit_quality;
   const giDelta = last.green_impact - first.green_impact;
-  const netDelta = cqDelta + giDelta;
-  const trend: Trend = netDelta > 2 ? "improving" : netDelta < -2 ? "declining" : "stable";
-  return { trend, credit_quality_delta: cqDelta, green_impact_delta: giDelta, sample_count: entries.length };
+
+  const combined = sorted.map((e) => e.credit_quality + e.green_impact);
+  const fittedChange = leastSquaresSlope(combined) * (combined.length - 1);
+
+  let trend: Trend;
+  if (fittedChange > TREND_THRESHOLD) {
+    trend = "improving";
+  } else if (fittedChange < -TREND_THRESHOLD) {
+    trend = "declining";
+  } else {
+    // Flat overall — check whether intermediate samples reveal a reversal.
+    let peak = combined[0];
+    let trough = combined[0];
+    let maxRise = 0;
+    let maxDrop = 0;
+    for (const value of combined) {
+      if (value > peak) peak = value;
+      if (value < trough) trough = value;
+      if (value - trough > maxRise) maxRise = value - trough;
+      if (peak - value > maxDrop) maxDrop = peak - value;
+    }
+
+    const volatile = maxRise > TREND_THRESHOLD && maxDrop > TREND_THRESHOLD;
+    if (!volatile) {
+      trend = "stable";
+    } else {
+      // Follow the latest movement so a rise-then-collapse is not "stable".
+      let latestStep = 0;
+      for (let i = combined.length - 1; i > 0; i--) {
+        const step = combined[i] - combined[i - 1];
+        if (step !== 0) {
+          latestStep = Math.sign(step);
+          break;
+        }
+      }
+      trend = latestStep > 0 ? "improving" : latestStep < 0 ? "declining" : "stable";
+    }
+  }
+
+  return {
+    trend,
+    credit_quality_delta: cqDelta,
+    green_impact_delta: giDelta,
+    sample_count: entries.length,
+  };
 }
 
 export function entriesToCsv(entries: ScoreEntry[]): string {

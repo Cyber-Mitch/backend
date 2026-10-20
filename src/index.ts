@@ -37,6 +37,8 @@ import { creatorApplicationsRouter, creatorAdminRouter } from "./routes/creatorA
 import oracleStatusRouter from "./routes/oracle-status";
 import { createHandler } from "graphql-http/lib/use/express";
 import { graphqlSchema, graphqlRoot, createGraphQLContext } from "./graphql/schema";
+import { validateGraphQLDocument } from "./graphql/security";
+import { createRequestTimeout } from "./middleware/requestTimeout";
 import { startGrpcServer } from "./grpc/server";
 import { assignRole } from "./lib/roles";
 import { runHourlyScoreUpdate } from "./lib/scoreUpdateCron";
@@ -102,24 +104,6 @@ function parseTimeoutMs(value: string | undefined, fallback: number): number {
 const REQUEST_TIMEOUT_MS = parseTimeoutMs(process.env.REQUEST_TIMEOUT_MS, 30000);
 const ADMIN_REQUEST_TIMEOUT_MS = parseTimeoutMs(process.env.ADMIN_REQUEST_TIMEOUT_MS, 60000);
 
-function requestTimeout(timeoutMs: number) {
-  return (req: any, res: any, next: any) => {
-    if (res.locals.timeoutTimer) {
-      clearTimeout(res.locals.timeoutTimer);
-    }
-    const timer = setTimeout(() => {
-      if (!res.headersSent) {
-        res.status(408).json({ error: "request_timeout", message: "Request timed out" });
-      }
-      req.destroy();
-    }, timeoutMs);
-    res.locals.timeoutTimer = timer;
-    const clearTimer = () => clearTimeout(timer);
-    res.once("finish", clearTimer);
-    res.once("close", clearTimer);
-    next();
-  };
-}
 // Trust proxy configuration — required for Express to parse X-Forwarded-For
 // via req.ip / req.ips.  Without this, ipWhitelist must hand-parse headers,
 // which is vulnerable to spoofing.
@@ -179,9 +163,9 @@ app.use(
     level: parseInt(process.env.COMPRESSION_LEVEL ?? "6", 10),
   }),
 );
-app.use(requestTimeout(REQUEST_TIMEOUT_MS));
-app.use("/v1/admin", requestTimeout(ADMIN_REQUEST_TIMEOUT_MS));
-app.use("/api/admin", requestTimeout(ADMIN_REQUEST_TIMEOUT_MS));
+app.use(createRequestTimeout(REQUEST_TIMEOUT_MS));
+app.use("/v1/admin", createRequestTimeout(ADMIN_REQUEST_TIMEOUT_MS));
+app.use("/api/admin", createRequestTimeout(ADMIN_REQUEST_TIMEOUT_MS));
 app.use(express.json({ limit: config.BODY_SIZE_LIMIT }));
 app.use(sanitizeInputs);
 app.use(csrfProtection);
@@ -623,6 +607,7 @@ function bootstrap(): void {
       schema: graphqlSchema,
       rootValue: graphqlRoot,
       context: (req: any) => createGraphQLContext(req.raw) as any,
+      validate: validateGraphQLDocument,
     }),
   );
 

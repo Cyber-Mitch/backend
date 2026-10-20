@@ -16,13 +16,35 @@ export interface ChainTransaction {
   timestamp: number;
 }
 
+/**
+ * Outcome of a single-chain submission attempt.
+ *
+ * `status` distinguishes real submissions from chains that have no
+ * implementation yet. `txHash` is only populated when `status === "submitted"`;
+ * it is never synthesized as a placeholder.
+ */
+export type ChainSubmissionStatus = "submitted" | "failed" | "not_implemented";
+
+export interface ChainSubmissionResult {
+  chain: ChainId;
+  status: ChainSubmissionStatus;
+  /** Real transaction hash, or an empty string when the update was not submitted. */
+  txHash: string;
+  /** Kept for backwards compatibility; true only for `status === "submitted"`. */
+  success: boolean;
+  error?: string;
+}
+
 export interface MultiChainScoreUpdate {
   projectId: number;
   creditQuality: number;
   greenImpact: number;
   chains: ChainId[];
-  results: { chain: ChainId; txHash: string; success: boolean; error?: string }[];
+  results: ChainSubmissionResult[];
 }
+
+export const EVM_NOT_IMPLEMENTED_ERROR =
+  "not_implemented: EVM chain submission is not implemented; only Stellar is currently supported";
 
 const DEFAULT_CHAINS: ChainConfig[] = [
   {
@@ -92,12 +114,26 @@ export async function broadcastToChains(
   const results: MultiChainScoreUpdate["results"] = [];
 
   for (const chain of targets) {
+    // Stellar is the only chain with a real submission path. EVM chains reply
+    // with an explicit not_implemented status instead of a fabricated hash.
+    if (chain.id !== "stellar") {
+      results.push({
+        chain: chain.id,
+        status: "not_implemented",
+        txHash: "",
+        success: false,
+        error: EVM_NOT_IMPLEMENTED_ERROR,
+      });
+      continue;
+    }
+
     try {
       const txHash = await submitToChain(chain, projectId, creditQuality, greenImpact);
-      results.push({ chain: chain.id, txHash, success: true });
+      results.push({ chain: chain.id, status: "submitted", txHash, success: true });
     } catch (err) {
       results.push({
         chain: chain.id,
+        status: "failed",
         txHash: "",
         success: false,
         error: err instanceof Error ? err.message : String(err),
@@ -126,13 +162,7 @@ async function submitToChain(
     return updateImpactScore(projectId, creditQuality, greenImpact);
   }
 
-  // EVM chains (Ethereum, Polygon): simulate a tx hash for non-configured RPCs
-  if (!chain.rpcUrl || !chain.contractAddress) {
-    const hash = `0x${chain.id}_${projectId}_${Date.now().toString(16)}`;
-    return hash;
-  }
-
-  // Placeholder for real EVM contract call via ethers/viem
-  const hash = `0x${Buffer.from(`${chain.id}:${projectId}:${creditQuality}:${greenImpact}:${Date.now()}`).toString("hex").slice(0, 62)}`;
-  return hash;
+  // No EVM submission path exists. Refuse loudly rather than returning a
+  // synthesized hash that consumers could mistake for an on-chain write.
+  throw new Error(EVM_NOT_IMPLEMENTED_ERROR);
 }

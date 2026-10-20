@@ -1220,13 +1220,19 @@ Updates configuration for a specific chain network (`enabled`, `rpcUrl`, `contra
 
 ### `POST /v1/chains/broadcast/:projectId`
 
-Broadcasts computed project impact scores across one or all enabled blockchain networks.
+Broadcasts computed project impact scores to Stellar. EVM chains (Ethereum,
+Polygon) do not have a submission implementation yet: requesting one returns
+`501 Not Implemented` rather than a synthetic transaction hash.
+
+On success the response contains per-chain results with a `status` of
+`submitted`, `failed`, or `not_implemented`. `txHash` is only populated for
+real `submitted` results.
 
 **Request Body**
 
 ```json
 {
-  "chains": ["stellar", "polygon"]
+  "chains": ["stellar"]
 }
 ```
 
@@ -1687,6 +1693,28 @@ ws.on('close', (code, reason) => {
 
 - **HTTP Endpoint**: `/graphql` (POST requests)
 - **GraphiQL Playground**: `/graphql-playground` (GET request in browser)
+
+### Query safety limits
+
+GraphQL documents are validated before execution. A request that exceeds a
+limit is rejected with a `GRAPHQL_*` error code and no resolvers (DataLoader,
+database, or RPC work) run.
+
+| Limit                                                | Default | Environment variable       |
+| ---------------------------------------------------- | ------- | -------------------------- |
+| Maximum field-selection depth per operation          | 12      | `GRAPHQL_MAX_DEPTH`        |
+| Maximum field selections per operation (complexity)  | 1000    | `GRAPHQL_MAX_COMPLEXITY`   |
+| Maximum root fields/aliases per operation            | 20      | `GRAPHQL_MAX_ROOT_FIELDS`  |
+
+Fragments and inline fragments are expanded when calculating these limits, so
+wrapping selections in fragments does not bypass them. Repeated aliases of the
+same field each count towards complexity and the root-field cap.
+
+**Introspection policy:** `__schema` and `__type` introspection is disabled
+when `NODE_ENV=production` and enabled in other environments. Set
+`GRAPHQL_ALLOW_INTROSPECTION=true` to allow introspection in production (for
+example, for a trusted internal schema registry) or `false` to disable it
+everywhere. `__typename` is always allowed.
 
 ### Example Query
 

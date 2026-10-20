@@ -2,6 +2,7 @@ import request from "supertest";
 import express, { Express } from "express";
 import { createHandler } from "graphql-http/lib/use/express";
 import { graphqlSchema, graphqlRoot, createGraphQLContext } from "../graphql/schema";
+import { validateGraphQLDocument } from "../graphql/security";
 import * as registry from "../lib/registry";
 import * as iot from "../routes/iot";
 import * as scoring from "../lib/scoring";
@@ -27,6 +28,7 @@ function buildApp(): Express {
       schema: graphqlSchema as any,
       rootValue: graphqlRoot,
       context: (req: any) => createGraphQLContext(req.raw) as any,
+      validate: validateGraphQLDocument,
     }),
   );
 
@@ -37,8 +39,14 @@ function buildApp(): Express {
 describe("GraphQL API Integration", () => {
   let app: Express;
   let consumerKey: string;
+  const originalEnv = { ...process.env };
 
   beforeAll(() => {
+    process.env.ADMIN_API_KEY = "admin-secret-key";
+  });
+
+  afterEach(() => {
+    process.env = { ...originalEnv };
     process.env.ADMIN_API_KEY = "admin-secret-key";
   });
 
@@ -170,5 +178,108 @@ describe("GraphQL API Integration", () => {
     expect(res.body.errors).toBeUndefined();
     expect(res.body.data.updateProjectScores.id).toBe("1");
     expect(registry.updateImpactScore).toHaveBeenCalledWith(1, 90, 80);
+  });
+
+  // ── Query safety limits ────────────────────────────────────────────────────
+
+  it("rejects queries deeper than GRAPHQL_MAX_DEPTH before execution", async () => {
+    process.env.GRAPHQL_MAX_DEPTH = "2";
+    const query = `
+      query {
+        projects {
+          solar {
+            power_output_kw
+          }
+        }
+      }
+    `;
+
+    const res = await request(app).post("/graphql").set("X-API-Key", consumerKey).send({ query });
+
+    expect(res.status).toBe(200);
+    expect(res.body.data).toBeUndefined();
+    expect(res.body.errors[0].message).toContain("depth 3");
+    expect(res.body.errors[0].message).toContain("maximum allowed depth of 2");
+    expect(iot.getSolarData).not.toHaveBeenCalled();
+  });
+
+  it("rejects queries over GRAPHQL_MAX_COMPLEXITY before execution", async () => {
+    process.env.GRAPHQL_MAX_COMPLEXITY = "3";
+    const query = `
+      query {
+        projects {
+          id
+          credit_quality
+          green_impact
+        }
+      }
+    `;
+
+    const res = await request(app).post("/graphql").set("X-API-Key", consumerKey).send({ query });
+
+    expect(res.status).toBe(200);
+    expect(res.body.data).toBeUndefined();
+    expect(res.body.errors[0].message).toContain("complexity 4");
+    expect(res.body.errors[0].message).toContain("maximum allowed complexity of 3");
+    expect(registry.getTotalProjects).not.toHaveBeenCalled();
+  });
+
+  it("rejects alias fan-out beyond the root field cap", async () => {
+    const selections = Array.from(
+      { length: 21 },
+      (_, index) => `p${index}: projects(limit: 1) { id }`,
+    ).join("\n");
+    const query = `query { ${selections} }`;
+
+    const res = await request(app).post("/graphql").set("X-API-Key", consumerKey).send({ query });
+
+    expect(res.status).toBe(200);
+    expect(res.body.data).toBeUndefined();
+    expect(res.body.errors[0].message).toContain("21 root fields/aliases");
+    expect(res.body.errors[0].message).toContain("maximum of 20");
+    expect(registry.getTotalProjects).not.toHaveBeenCalled();
+  });
+
+  it("disables introspection in production", async () => {
+    process.env.NODE_ENV = "production";
+    delete process.env.GRAPHQL_ALLOW_INTROSPECTION;
+
+    const query = `
+      query {
+        __schema {
+          queryType {
+            name
+          }
+        }
+      }
+    `;
+
+    const res = await request(app).post("/graphql").set("X-API-Key", consumerKey).send({ query });
+
+    expect(res.status).toBe(200);
+    expect(res.body.data).toBeUndefined();
+    expect(res.body.errors[0].message).toContain("introspection");
+    expect(res.body.errors[0].extensions.code).toBe("GRAPHQL_INTROSPECTION_DISABLED");
+  });
+
+  it("allows introspection in non-production environments", async () => {
+    process.env.NODE_ENV = "test";
+    delete process.env.GRAPHQL_ALLOW_INTROSPECTION;
+
+    const query = `
+      query {
+        __schema {
+          queryType {
+            name
+          }
+        }
+      }
+    `;
+
+    const res = await request(app).post("/graphql").set("X-API-Key", consumerKey).send({ query });
+
+    expect(res.status).toBe(200);
+    expect(res.body.errors).toBeUndefined();
+    expect(res.body.data.__schema.queryType.name).toBe("Query");
   });
 });

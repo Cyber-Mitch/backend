@@ -331,34 +331,38 @@ describe("broadcastToChains", () => {
     expect(registryMock.updateImpactScore).toHaveBeenCalledWith(42, 90, 55);
   });
 
-  // ── EVM fabricated hash (no rpcUrl / contractAddress) ────────────────────────
+  // ── EVM not implemented (no fabricated hashes) ───────────────────────────────
 
-  it("fabricates an EVM tx hash when rpcUrl is missing", async () => {
+  it("reports not_implemented instead of a hash when rpcUrl is missing", async () => {
     configureChain("ethereum", { enabled: true, rpcUrl: "", contractAddress: undefined });
     const result = await broadcastToChains(5, 70, 60, ["ethereum"]);
     const ethResult = result.results.find((r) => r.chain === "ethereum");
-    expect(ethResult?.success).toBe(true);
-    expect(ethResult?.txHash).toMatch(/^0x/);
-    expect(ethResult?.txHash).toContain("ethereum");
+    expect(ethResult?.success).toBe(false);
+    expect(ethResult?.status).toBe("not_implemented");
+    expect(ethResult?.txHash).toBe("");
+    expect(ethResult?.error).toContain("not_implemented");
   });
 
-  it("fabricated EVM hash contains the project id", async () => {
+  it("never synthesizes a hash containing the project id", async () => {
     configureChain("polygon", { enabled: true, rpcUrl: "", contractAddress: undefined });
     const result = await broadcastToChains(99, 50, 50, ["polygon"]);
     const polyResult = result.results.find((r) => r.chain === "polygon");
-    expect(polyResult?.txHash).toContain("99");
+    expect(polyResult?.status).toBe("not_implemented");
+    expect(polyResult?.txHash).toBe("");
+    expect(polyResult?.txHash).not.toContain("99");
   });
 
-  it("fabricated EVM hash contains the chain id", async () => {
+  it("never synthesizes a hash containing the chain id", async () => {
     configureChain("ethereum", { enabled: true, rpcUrl: "", contractAddress: undefined });
     const result = await broadcastToChains(1, 80, 80, ["ethereum"]);
     const ethResult = result.results.find((r) => r.chain === "ethereum");
-    expect(ethResult?.txHash).toContain("ethereum");
+    expect(ethResult?.status).toBe("not_implemented");
+    expect(ethResult?.txHash).toBe("");
   });
 
   // ── EVM configured (rpcUrl + contractAddress present) ────────────────────────
 
-  it("returns a valid 0x-prefixed hash when rpcUrl and contractAddress are set", async () => {
+  it("reports not_implemented even when rpcUrl and contractAddress are set", async () => {
     configureChain("ethereum", {
       enabled: true,
       rpcUrl: "https://eth-rpc.example.com",
@@ -366,8 +370,10 @@ describe("broadcastToChains", () => {
     });
     const result = await broadcastToChains(1, 75, 65, ["ethereum"]);
     const ethResult = result.results.find((r) => r.chain === "ethereum");
-    expect(ethResult?.success).toBe(true);
-    expect(ethResult?.txHash).toMatch(/^0x[0-9a-f]+$/i);
+    expect(ethResult?.success).toBe(false);
+    expect(ethResult?.status).toBe("not_implemented");
+    expect(ethResult?.txHash).toBe("");
+    expect(ethResult?.txHash).not.toMatch(/^0x[0-9a-f]+$/i);
   });
 
   // ── multi-chain targeting ────────────────────────────────────────────────────
@@ -446,7 +452,8 @@ describe("broadcastToChains", () => {
     const ethRes = result.results.find((r) => r.chain === "ethereum");
 
     expect(stellarRes?.success).toBe(false);
-    expect(ethRes?.success).toBe(true); // EVM fabricated hash succeeds
+    expect(ethRes?.status).toBe("not_implemented");
+    expect(ethRes?.success).toBe(false);
   });
 
   it("does not reject the returned promise even when all chains fail", async () => {
