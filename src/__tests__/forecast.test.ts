@@ -13,6 +13,8 @@ import {
   accuracyToCsv,
   getValidMethods,
   isMethodValid,
+  mean,
+  stdDev,
 } from "../lib/forecast";
 import forecastRouter from "../routes/forecast";
 import { errorHandler } from "../middleware/errors";
@@ -114,6 +116,48 @@ describe("forecastProject", () => {
     const result = forecastProject(1, "power_output_kw", 10, "linear_trend", 168);
     const vals = result.forecasts.map((f) => f.value);
     expect(new Set(vals).size).toBeGreaterThan(1);
+  });
+});
+
+describe("statistical helpers — empty input", () => {
+  it("mean([]) returns 0", () => {
+    expect(mean([])).toBe(0);
+  });
+
+  it("stdDev([]) returns 0", () => {
+    expect(stdDev([], 0)).toBe(0);
+  });
+
+  it("mean/stdDev keep behaviour for non-empty input", () => {
+    expect(mean([2, 4, 6])).toBe(4);
+    expect(stdDev([2, 4, 6], 4)).toBeCloseTo(Math.sqrt(8 / 3), 10);
+  });
+});
+
+describe("empty history produces no NaN", () => {
+  it("forecastProject yields no NaN across all methods", () => {
+    for (const method of getValidMethods()) {
+      const result = forecastProject(1, "power_output_kw", 6, method as any, 0);
+      for (const fp of result.forecasts) {
+        expect(Number.isNaN(fp.value)).toBe(false);
+      }
+    }
+  });
+
+  it("forecastWeatherAdjusted yields no NaN", () => {
+    const result = forecastWeatherAdjusted(1, 6, 0);
+    for (const fp of result.forecasts) {
+      expect(Number.isNaN(fp.value)).toBe(false);
+    }
+  });
+
+  it("analyzeSeasonalPatterns yields no NaN", () => {
+    const result = analyzeSeasonalPatterns(1, "power_output_kw", 0);
+    for (const p of result.hourly.patterns) {
+      expect(Number.isNaN(p.avg_value)).toBe(false);
+    }
+    expect(Number.isNaN(result.hourly.strength)).toBe(false);
+    expect(Number.isNaN(result.monthly.strength)).toBe(false);
   });
 });
 
@@ -221,55 +265,41 @@ describe("forecast API routes", () => {
   });
 
   it("GET /api/forecast/1 — returns forecast", async () => {
-    const res = await request(app)
-      .get("/api/forecast/1")
-      .expect(200);
+    const res = await request(app).get("/api/forecast/1").expect(200);
     expect(res.body.project_id).toBe(1);
     expect(res.body.forecasts).toHaveLength(24);
     expect(res.body.method).toBe("exponential_smoothing");
   });
 
   it("GET /api/forecast/1?horizon=6&method=naive — respects params", async () => {
-    const res = await request(app)
-      .get("/api/forecast/1?horizon=6&method=naive")
-      .expect(200);
+    const res = await request(app).get("/api/forecast/1?horizon=6&method=naive").expect(200);
     expect(res.body.forecasts).toHaveLength(6);
     expect(res.body.method).toBe("naive");
   });
 
   it("GET /api/forecast/1 — 400 for invalid method", async () => {
-    const res = await request(app)
-      .get("/api/forecast/1?method=invalid")
-      .expect(400);
-    expect(res.body.error).toBe("bad_request");
+    const res = await request(app).get("/api/forecast/1?method=invalid").expect(400);
+    expect(res.body.error.code).toBe("bad_request");
   });
 
   it("GET /api/forecast/1 — 400 for invalid id", async () => {
-    const res = await request(app)
-      .get("/api/forecast/abc")
-      .expect(400);
-    expect(res.body.error).toBe("bad_request");
+    const res = await request(app).get("/api/forecast/abc").expect(400);
+    expect(res.body.error.code).toBe("bad_request");
   });
 
   it("GET /api/forecast/weather-adjusted/1 — returns weather-adjusted forecast", async () => {
-    const res = await request(app)
-      .get("/api/forecast/weather-adjusted/1")
-      .expect(200);
+    const res = await request(app).get("/api/forecast/weather-adjusted/1").expect(200);
     expect(res.body.method).toBe("weather_adjusted");
     expect(res.body.forecasts).toHaveLength(24);
   });
 
   it("GET /api/forecast/weather-adjusted/1?horizon=6 — respects horizon", async () => {
-    const res = await request(app)
-      .get("/api/forecast/weather-adjusted/1?horizon=6")
-      .expect(200);
+    const res = await request(app).get("/api/forecast/weather-adjusted/1?horizon=6").expect(200);
     expect(res.body.forecasts).toHaveLength(6);
   });
 
   it("GET /api/forecast/seasonal/1 — returns seasonal patterns", async () => {
-    const res = await request(app)
-      .get("/api/forecast/seasonal/1")
-      .expect(200);
+    const res = await request(app).get("/api/forecast/seasonal/1").expect(200);
     expect(res.body).toHaveProperty("hourly");
     expect(res.body).toHaveProperty("monthly");
     expect(res.body.hourly.patterns).toHaveLength(24);
@@ -277,16 +307,12 @@ describe("forecast API routes", () => {
   });
 
   it("GET /api/forecast/seasonal/1?field=efficiency_pct — respects field", async () => {
-    const res = await request(app)
-      .get("/api/forecast/seasonal/1?field=efficiency_pct")
-      .expect(200);
+    const res = await request(app).get("/api/forecast/seasonal/1?field=efficiency_pct").expect(200);
     expect(res.body.field).toBe("efficiency_pct");
   });
 
   it("GET /api/forecast/accuracy/1 — returns accuracy metrics", async () => {
-    const res = await request(app)
-      .get("/api/forecast/accuracy/1")
-      .expect(200);
+    const res = await request(app).get("/api/forecast/accuracy/1").expect(200);
     expect(res.body).toHaveProperty("metrics");
     expect(res.body).toHaveProperty("comparisons");
     expect(res.body.metrics).toHaveProperty("mae");
@@ -296,49 +322,37 @@ describe("forecast API routes", () => {
   });
 
   it("GET /api/forecast/accuracy/1?method=linear_trend — respects method", async () => {
-    const res = await request(app)
-      .get("/api/forecast/accuracy/1?method=linear_trend")
-      .expect(200);
+    const res = await request(app).get("/api/forecast/accuracy/1?method=linear_trend").expect(200);
     expect(res.body.method).toBe("linear_trend");
   });
 
   it("GET /api/forecast/methods/available — lists methods", async () => {
-    const res = await request(app)
-      .get("/api/forecast/methods/available")
-      .expect(200);
+    const res = await request(app).get("/api/forecast/methods/available").expect(200);
     expect(res.body.methods).toBeInstanceOf(Array);
     expect(res.body.methods).toContain("naive");
     expect(res.body.methods).toContain("exponential_smoothing");
   });
 
   it("GET /api/forecast/1 — returns CSV format", async () => {
-    const res = await request(app)
-      .get("/api/forecast/1?format=csv")
-      .expect(200);
+    const res = await request(app).get("/api/forecast/1?format=csv").expect(200);
     expect(res.headers["content-type"]).toMatch(/text\/csv/);
     expect(res.text).toContain("forecast_value");
   });
 
   it("GET /api/forecast/seasonal/1 — returns CSV format", async () => {
-    const res = await request(app)
-      .get("/api/forecast/seasonal/1?format=csv")
-      .expect(200);
+    const res = await request(app).get("/api/forecast/seasonal/1?format=csv").expect(200);
     expect(res.headers["content-type"]).toMatch(/text\/csv/);
     expect(res.text).toContain("type,label,avg_value,count,strength");
   });
 
   it("GET /api/forecast/accuracy/1 — returns CSV format", async () => {
-    const res = await request(app)
-      .get("/api/forecast/accuracy/1?format=csv")
-      .expect(200);
+    const res = await request(app).get("/api/forecast/accuracy/1?format=csv").expect(200);
     expect(res.headers["content-type"]).toMatch(/text\/csv/);
     expect(res.text).toContain("MAE");
   });
 
   it("GET /api/forecast/weather-adjusted/1 — returns CSV format", async () => {
-    const res = await request(app)
-      .get("/api/forecast/weather-adjusted/1?format=csv")
-      .expect(200);
+    const res = await request(app).get("/api/forecast/weather-adjusted/1?format=csv").expect(200);
     expect(res.headers["content-type"]).toMatch(/text\/csv/);
     expect(res.text).toContain("forecast_value");
   });

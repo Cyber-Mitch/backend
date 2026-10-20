@@ -1,48 +1,49 @@
-import { Router } from "express";
+import { Router, Request, Response, NextFunction } from "express";
 import { parseProjectId } from "../middleware/errors";
+import { fetchSolarData, fetchSatelliteData } from "../providers/registry";
+import { extractApiKeyRole } from "../middleware/requireApiKeyRole";
 
-const MAX_POWER_KW = 1000;
-
-function seededRandom(seed: number): number {
-  const hourSeed = Math.floor(Date.now() / 3_600_000);
-  const x = Math.sin(seed * 9301 + hourSeed * 49297 + 233) * 10000;
-  return x - Math.floor(x);
-}
-
-export function getSolarData(projectId: number) {
-  const base = seededRandom(projectId);
-  const drift = seededRandom(projectId * 7 + 1);
-  const efficiency_pct = Math.min(98, Math.max(40, 40 + base * 58 + drift * 2 - 1));
-  const power_output_kw = (efficiency_pct / 100) * MAX_POWER_KW;
-  return {
-    power_output_kw: Math.round(power_output_kw * 100) / 100,
-    efficiency_pct: Math.round(efficiency_pct * 100) / 100,
-    max_power_kw: MAX_POWER_KW,
-    timestamp: Date.now(),
-  };
-}
-
-export function getSatelliteData(projectId: number) {
-  const base = seededRandom(projectId * 3 + 5);
-  const drift = seededRandom(projectId * 11 + 2);
-  const forest_density_pct = Math.min(100, Math.max(0, 30 + base * 65 + drift * 5 - 2.5));
-  return {
-    forest_density_pct: Math.round(forest_density_pct * 100) / 100,
-    ndvi_score: Math.round(Math.min(1, forest_density_pct / 100) * 1000) / 1000,
-    timestamp: Date.now(),
-  };
-}
+/**
+ * Issue #653: Pluggable real data sources.
+ * Routes now use provider registry with fallback support.
+ */
+export { seededRandom, getSolarData, getSatelliteData, getHourSeed } from "../lib/iot";
 
 const router = Router();
 
-router.get("/solar/:id", (req, res) => {
-  const id = parseProjectId(req.params.id, "project id");
-  res.json(getSolarData(id));
+router.use(extractApiKeyRole);
+
+/**
+ * GET /v1/iot/solar/:id
+ * Fetch solar data using provider fallback (SolarEdge → Simulator)
+ */
+router.get("/solar/:id", async (req: Request, res: Response, next: NextFunction) => {
+  try {
+    const id = parseProjectId(req.params.id, "project id");
+    // TODO: Load project credentials from database
+    const credentials = undefined; // Will fallback to simulator
+    const reading = await fetchSolarData(id, credentials);
+    res.json(reading);
+  } catch (err) {
+    next(err);
+  }
 });
 
-router.get("/satellite/:id", (req, res) => {
-  const id = parseProjectId(req.params.id, "project id");
-  res.json(getSatelliteData(id));
+/**
+ * GET /v1/iot/satellite/:id
+ * Fetch satellite data using provider fallback (Sentinel-2 → Simulator)
+ */
+router.get("/satellite/:id", async (req: Request, res: Response, next: NextFunction) => {
+  try {
+    const id = parseProjectId(req.params.id, "project id");
+    const polygonParam = req.query.polygon as string | undefined;
+    const polygon = polygonParam ? JSON.parse(polygonParam) : undefined;
+    const credentials = undefined; // Will fallback to simulator
+    const reading = await fetchSatelliteData(id, polygon, credentials);
+    res.json(reading);
+  } catch (err) {
+    next(err);
+  }
 });
 
 export default router;

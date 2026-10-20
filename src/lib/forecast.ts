@@ -1,4 +1,5 @@
-const MAX_POWER_KW = 1000;
+import { config } from "../config";
+const MAX_POWER_KW = config.MAX_POWER_KW;
 
 export interface ForecastPoint {
   timestamp: number;
@@ -48,10 +49,19 @@ export interface SatelliteSnapshot {
   timestamp: number;
 }
 
+/**
+ * Generates a deterministic pseudo-random number in [0, 1) for a given seed and timestamp.
+ * Uses a MurmurHash3 finalizer to ensure avalanche: nearby seeds produce
+ * vastly different outputs, preventing seed collision for adjacent project IDs.
+ * The timeMs parameter allows historical/forecast data to vary by hour.
+ */
 function seededRandomAtTime(seed: number, timeMs: number): number {
   const hourSeed = Math.floor(timeMs / 3_600_000);
-  const x = Math.sin(seed * 9301 + hourSeed * 49297 + 233) * 10000;
-  return x - Math.floor(x);
+  let h = (seed * 2654435761) ^ (hourSeed * 40503) ^ 0x9e3779b9;
+  h = Math.imul(h ^ (h >>> 16), 0x85ebca6b);
+  h = Math.imul(h ^ (h >>> 13), 0xc2b2ae35);
+  h = (h ^ (h >>> 16)) >>> 0;
+  return h / 0xffffffff;
 }
 
 export function getHistoricalSolarData(projectId: number, timestamp: number): SolarSnapshot {
@@ -98,15 +108,20 @@ function round(n: number, d = 4): number {
   return Math.round(n * f) / f;
 }
 
-function mean(values: number[]): number {
+// Exported for tests; also used internally by the forecasting helpers.
+export function mean(values: number[]): number {
+  if (values.length === 0) return 0;
   return values.reduce((s, v) => s + v, 0) / values.length;
 }
 
-function stdDev(values: number[], avg: number): number {
+// Exported for tests; also used internally by the forecasting helpers.
+export function stdDev(values: number[], avg: number): number {
+  if (values.length === 0) return 0;
   return Math.sqrt(values.reduce((s, v) => s + (v - avg) ** 2, 0) / values.length);
 }
 
 function last(values: number[]): number {
+  if (values.length === 0) return 0;
   return values[values.length - 1];
 }
 

@@ -30,7 +30,10 @@ const router = Router();
 router.get("/:id/trend", (req: Request, res: Response, next: NextFunction) => {
   try {
     const id = parseProjectId(req.params.id, "project id");
-    const historyHours = Math.min(Math.max(parseOptionalInt(req.query.history_hours as string, "history_hours", 720), 24), 8760);
+    const historyHours = Math.min(
+      Math.max(parseOptionalInt(req.query.history_hours as string, "history_hours", 720), 24),
+      8760,
+    );
     const result = analyzeEfficiencyTrend(id, historyHours);
     res.json(result);
   } catch (error) {
@@ -41,14 +44,18 @@ router.get("/:id/trend", (req: Request, res: Response, next: NextFunction) => {
 router.get("/:id/failure-prediction", (req: Request, res: Response, next: NextFunction) => {
   try {
     const id = parseProjectId(req.params.id, "project id");
-    const historyHours = Math.min(Math.max(parseOptionalInt(req.query.history_hours as string, "history_hours", 720), 24), 8760);
+    const historyHours = Math.min(
+      Math.max(parseOptionalInt(req.query.history_hours as string, "history_hours", 720), 24),
+      8760,
+    );
     const result = predictFailure(id, historyHours);
 
     const format = req.query.format === "csv" ? "csv" : "json";
     if (format === "csv") {
       res.setHeader("Content-Type", "text/csv");
       res.setHeader("Content-Disposition", `attachment; filename="failure-prediction-${id}.csv"`);
-      const header = "project_id,current_efficiency,critical_threshold,estimated_hours_to_threshold,estimated_days_to_threshold,severity,trend_quality,confidence,panel_type";
+      const header =
+        "project_id,current_efficiency,critical_threshold,estimated_hours_to_threshold,estimated_days_to_threshold,severity,trend_quality,confidence,panel_type";
       const row = `${result.project_id},${result.current_efficiency},${result.critical_threshold},${result.estimated_hours_to_threshold},${result.estimated_days_to_threshold},${result.severity},${result.trend_quality},${result.confidence},${result.panel_type}`;
       res.send([header, row].join("\n") + "\n");
       return;
@@ -63,13 +70,19 @@ router.get("/:id/failure-prediction", (req: Request, res: Response, next: NextFu
 router.get("/:id/recommendation", (req: Request, res: Response, next: NextFunction) => {
   try {
     const id = parseProjectId(req.params.id, "project id");
-    const historyHours = Math.min(Math.max(parseOptionalInt(req.query.history_hours as string, "history_hours", 720), 24), 8760);
+    const historyHours = Math.min(
+      Math.max(parseOptionalInt(req.query.history_hours as string, "history_hours", 720), 24),
+      8760,
+    );
     const result = recommendMaintenance(id, historyHours);
 
     const format = req.query.format === "csv" ? "csv" : "json";
     if (format === "csv") {
       res.setHeader("Content-Type", "text/csv");
-      res.setHeader("Content-Disposition", `attachment; filename="maintenance-recommendation-${id}.csv"`);
+      res.setHeader(
+        "Content-Disposition",
+        `attachment; filename="maintenance-recommendation-${id}.csv"`,
+      );
       res.send(recommendationToCsv(result));
       return;
     }
@@ -83,7 +96,10 @@ router.get("/:id/recommendation", (req: Request, res: Response, next: NextFuncti
 router.get("/:id/schedule", (req: Request, res: Response, next: NextFunction) => {
   try {
     const id = parseProjectId(req.params.id, "project id");
-    const historyHours = Math.min(Math.max(parseOptionalInt(req.query.history_hours as string, "history_hours", 720), 24), 8760);
+    const historyHours = Math.min(
+      Math.max(parseOptionalInt(req.query.history_hours as string, "history_hours", 720), 24),
+      8760,
+    );
     const result = generateSchedule(id, historyHours);
 
     const format = req.query.format === "csv" ? "csv" : "json";
@@ -103,7 +119,10 @@ router.get("/:id/schedule", (req: Request, res: Response, next: NextFunction) =>
 router.get("/:id/full-report", (req: Request, res: Response, next: NextFunction) => {
   try {
     const id = parseProjectId(req.params.id, "project id");
-    const historyHours = Math.min(Math.max(parseOptionalInt(req.query.history_hours as string, "history_hours", 720), 24), 8760);
+    const historyHours = Math.min(
+      Math.max(parseOptionalInt(req.query.history_hours as string, "history_hours", 720), 24),
+      8760,
+    );
     const result = generateFullReport(id, historyHours);
     res.json(result);
   } catch (error) {
@@ -150,25 +169,30 @@ router.get("/tasks", (req: Request, res: Response, next: NextFunction) => {
 router.post("/tasks/generate/:id", (req: Request, res: Response, next: NextFunction) => {
   try {
     const id = parseProjectId(req.params.id, "project id");
-    const historyHours = Math.min(Math.max(parseOptionalInt(req.query.history_hours as string, "history_hours", 720), 24), 8760);
+    const historyHours = Math.min(
+      Math.max(parseOptionalInt(req.query.history_hours as string, "history_hours", 720), 24),
+      8760,
+    );
 
     const recommendation = recommendMaintenance(id, historyHours);
     const schedule = generateSchedule(id, historyHours);
 
-    const tasks = schedule.schedule.map((entry) => {
-      return entry.actions.map((action) =>
-        createTask({
-          project_id: id,
-          title: `${action.type.replace(/_/g, " ").replace(/\b\w/g, (c) => c.toUpperCase())} - Project ${id}`,
-          description: action.description,
-          action_type: action.type,
-          priority: action.priority,
-          scheduled_date: entry.date,
-          assigned_to: "unassigned",
-          estimated_cost: action.estimated_cost,
-        }),
-      );
-    }).flat();
+    const tasks = schedule.schedule
+      .map((entry) => {
+        return entry.actions.map((action) =>
+          createTask({
+            project_id: id,
+            title: `${action.type.replace(/_/g, " ").replace(/\b\w/g, (c) => c.toUpperCase())} - Project ${id}`,
+            description: action.description,
+            action_type: action.type,
+            priority: action.priority,
+            scheduled_date: entry.date,
+            assigned_to: "unassigned",
+            estimated_cost: action.estimated_cost,
+          }),
+        );
+      })
+      .flat();
 
     res.status(201).json({ tasks, count: tasks.length });
   } catch (error) {
@@ -201,6 +225,32 @@ router.patch("/tasks/:taskId", (req: Request, res: Response, next: NextFunction)
 router.post("/tasks/:taskId/complete", (req: Request, res: Response, next: NextFunction) => {
   try {
     const body = req.body as Record<string, unknown>;
+
+    // Runtime type validation — TypeScript casts don't protect against
+    // callers sending strings, which would corrupt numeric aggregations.
+    if (
+      body.actual_cost !== undefined &&
+      (typeof body.actual_cost !== "number" || body.actual_cost < 0)
+    ) {
+      throw badRequest("actual_cost must be a non-negative number");
+    }
+    if (
+      body.efficiency_before !== undefined &&
+      (typeof body.efficiency_before !== "number" ||
+        body.efficiency_before < 0 ||
+        body.efficiency_before > 100)
+    ) {
+      throw badRequest("efficiency_before must be a number between 0 and 100");
+    }
+    if (
+      body.efficiency_after !== undefined &&
+      (typeof body.efficiency_after !== "number" ||
+        body.efficiency_after < 0 ||
+        body.efficiency_after > 100)
+    ) {
+      throw badRequest("efficiency_after must be a number between 0 and 100");
+    }
+
     const result = completeTask(
       req.params.taskId as string,
       body.actual_cost as number | undefined,
@@ -236,7 +286,7 @@ router.get("/calendar", (req: Request, res: Response, next: NextFunction) => {
     const projectId = req.query.project_id ? Number(req.query.project_id) : undefined;
 
     if (!["daily", "weekly", "monthly"].includes(view)) {
-      throw badRequest('view must be one of: daily, weekly, monthly');
+      throw badRequest("view must be one of: daily, weekly, monthly");
     }
 
     const entries = getCalendarView(view as any, refDate, projectId);
@@ -287,9 +337,29 @@ router.post("/history/:id", (req: Request, res: Response, next: NextFunction) =>
     const id = parseProjectId(req.params.id, "project id");
     const body = req.body as Record<string, unknown>;
 
-    if (typeof body.action_type !== "string" || body.action_type.trim().length === 0) throw badRequest("action_type is required");
-    if (typeof body.description !== "string" || body.description.trim().length === 0) throw badRequest("description is required");
-    if (typeof body.cost !== "number" || body.cost < 0) throw badRequest("cost must be a non-negative number");
+    if (typeof body.action_type !== "string" || body.action_type.trim().length === 0)
+      throw badRequest("action_type is required");
+    if (typeof body.description !== "string" || body.description.trim().length === 0)
+      throw badRequest("description is required");
+    if (typeof body.cost !== "number" || body.cost < 0)
+      throw badRequest("cost must be a non-negative number");
+
+    // Runtime type validation for optional numeric fields — same rigor as
+    // validateTaskInput() applied to task creation on this same router.
+    if (
+      body.efficiency_before !== undefined &&
+      (typeof body.efficiency_before !== "number" ||
+        body.efficiency_before < 0 ||
+        body.efficiency_before > 100)
+    )
+      throw badRequest("efficiency_before must be a number between 0 and 100");
+    if (
+      body.efficiency_after !== undefined &&
+      (typeof body.efficiency_after !== "number" ||
+        body.efficiency_after < 0 ||
+        body.efficiency_after > 100)
+    )
+      throw badRequest("efficiency_after must be a number between 0 and 100");
 
     const record = recordManualMaintenance(
       id,

@@ -2,10 +2,14 @@ import { buildSchema } from "graphql";
 import DataLoader from "dataloader";
 import { getSolarData, getSatelliteData } from "../routes/iot";
 import { computeScores } from "../lib/scoring";
-import { createDefaultFinancialInput, calculateNPV, calculatePaybackPeriod } from "../lib/financial";
+import {
+  createDefaultFinancialInput,
+  calculateNPV,
+  calculatePaybackPeriod,
+} from "../lib/financial";
 import { updateImpactScore, getTotalProjects } from "../lib/registry";
 import { recordAudit } from "../lib/audit";
-import { validateApiKey, isRateLimited, incrementUsage } from "../lib/apiKeys";
+import { resolveAuthContext, incrementUsage } from "../lib/apiKeys";
 
 // 1. GraphQL SDL Schema
 export const graphqlSchema = buildSchema(`
@@ -69,47 +73,28 @@ export interface GraphQLContext {
 }
 
 export function createGraphQLContext(req: any): GraphQLContext {
-  const authHeader = req.headers.authorization;
-  const apiKeyHeader = req.headers["x-api-key"];
-  let providedKey = "";
+  const auth = resolveAuthContext(req.headers);
 
-  if (apiKeyHeader && typeof apiKeyHeader === "string") {
-    providedKey = apiKeyHeader;
-  } else if (authHeader && authHeader.startsWith("Bearer ")) {
-    providedKey = authHeader.substring(7);
+  if (auth.rateLimited) {
+    throw new Error("Rate limit exceeded for this API key");
   }
 
-  let isAdmin = false;
-  let isConsumer = false;
-  let consumerName = "";
-
-  const adminKey = process.env.ADMIN_API_KEY;
-  if (adminKey && providedKey === adminKey) {
-    isAdmin = true;
-  } else if (providedKey) {
-    const keyRecord = validateApiKey(providedKey);
-    if (keyRecord) {
-      if (isRateLimited(keyRecord.id, keyRecord.rate_limit)) {
-        throw new Error("Rate limit exceeded for this API key");
-      }
-      incrementUsage(keyRecord.id);
-      isConsumer = true;
-      consumerName = keyRecord.consumer_name;
-    }
+  if (auth.isConsumer && auth.keyRecord) {
+    incrementUsage(auth.keyRecord.id);
   }
 
   const solarLoader = new DataLoader<number, any>(async (keys) => {
-    return keys.map((id) => getSolarData(id));
+    return Promise.all(keys.map((id) => Promise.resolve(getSolarData(id))));
   });
 
   const satelliteLoader = new DataLoader<number, any>(async (keys) => {
-    return keys.map((id) => getSatelliteData(id));
+    return Promise.all(keys.map((id) => Promise.resolve(getSatelliteData(id))));
   });
 
   return {
-    isAdmin,
-    isConsumer,
-    consumerName,
+    isAdmin: auth.isAdmin,
+    isConsumer: auth.isConsumer,
+    consumerName: auth.consumerName,
     loaders: {
       solarLoader,
       satelliteLoader,
@@ -125,38 +110,44 @@ class ProjectResolver {
     this.id = id;
   }
 
-  async solar(_args: any, context: GraphQLContext) {
+  async solar(_args: unknown, context: GraphQLContext) {
     return context.loaders.solarLoader.load(parseInt(this.id, 10));
   }
 
-  async satellite(_args: any, context: GraphQLContext) {
+  async satellite(_args: unknown, context: GraphQLContext) {
     return context.loaders.satelliteLoader.load(parseInt(this.id, 10));
   }
 
-  async credit_quality(_args: any, context: GraphQLContext) {
+  async credit_quality(_args: unknown, context: GraphQLContext) {
     const solar = await context.loaders.solarLoader.load(parseInt(this.id, 10));
     const satellite = await context.loaders.satelliteLoader.load(parseInt(this.id, 10));
     const scores = computeScores({ solar, satellite });
     return scores.credit_quality;
   }
 
-  async green_impact(_args: any, context: GraphQLContext) {
+  async green_impact(_args: unknown, context: GraphQLContext) {
     const solar = await context.loaders.solarLoader.load(parseInt(this.id, 10));
     const satellite = await context.loaders.satelliteLoader.load(parseInt(this.id, 10));
     const scores = computeScores({ solar, satellite });
     return scores.green_impact;
   }
 
-  async financials(_args: any, context: GraphQLContext) {
+  async financials(_args: unknown, context: GraphQLContext) {
     const solar = await context.loaders.solarLoader.load(parseInt(this.id, 10));
     const input = createDefaultFinancialInput(solar.max_power_kw, solar.efficiency_pct);
     const npvResult = calculateNPV(input);
     const paybackResult = calculatePaybackPeriod(input);
 
     const totalBenefits = npvResult.discounted_cash_flows.reduce((acc, cf) => acc + cf.revenue, 0);
-    const totalOpsCosts = npvResult.discounted_cash_flows.reduce((acc, cf) => acc + cf.maintenance_cost, 0);
+    const totalOpsCosts = npvResult.discounted_cash_flows.reduce(
+      (acc, cf) => acc + cf.maintenance_cost,
+      0,
+    );
     const netBenefits = totalBenefits - totalOpsCosts + (input.salvage_value ?? 0);
-    const roi = input.installation_cost > 0 ? (netBenefits - input.installation_cost) / input.installation_cost : 0;
+    const roi =
+      input.installation_cost > 0
+        ? (netBenefits - input.installation_cost) / input.installation_cost
+        : 0;
 
     return {
       installation_cost: input.installation_cost,
@@ -179,22 +170,28 @@ export const graphqlRoot = {
     return new ProjectResolver(id);
   },
 
-  projects: async ({ limit = 10, offset = 0 }: { limit?: number; offset?: number }, context: GraphQLContext) => {
+  projects: async (
+    { limit = 10, offset = 0 }: { limit?: number; offset?: number },
+    context: GraphQLContext,
+  ) => {
     if (!context.isAdmin && !context.isConsumer) {
       throw new Error("Unauthorized: Valid API Key is required");
     }
     const total = await getTotalProjects();
-    const ids = Array.from({ length: total }, (_, i) => i + 1);
-    const paginatedIds = ids.slice(offset, offset + (limit ?? 10));
+    // Cap limit to prevent excessive memory usage (#696)
+    const cappedLimit = Math.min(limit ?? 10, 100);
+    const paginatedIds: number[] = [];
+    for (let i = 0; i < cappedLimit && offset + i < total; i++) {
+      paginatedIds.push(offset + i + 1);
+    }
     return paginatedIds.map((id) => new ProjectResolver(String(id)));
   },
 
-  portfolioSummary: async (_args: any, context: GraphQLContext) => {
+  portfolioSummary: async (_args: unknown, context: GraphQLContext) => {
     if (!context.isAdmin && !context.isConsumer) {
       throw new Error("Unauthorized: Valid API Key is required");
     }
     const total = await getTotalProjects();
-    const ids = Array.from({ length: total }, (_, i) => i + 1);
 
     let sumCq = 0;
     let sumGi = 0;
@@ -204,22 +201,36 @@ export const graphqlRoot = {
     let bestScore = -1;
     let worstScore = 999;
 
-    for (const id of ids) {
-      const solar = getSolarData(id);
-      const satellite = getSatelliteData(id);
-      const scores = computeScores({ solar, satellite });
-      sumCq += scores.credit_quality;
-      sumGi += scores.green_impact;
-      sumPower += solar.power_output_kw;
+    // Process projects in batches to avoid loading all into memory (#696)
+    const BATCH_SIZE = 1000;
+    for (let offset = 0; offset < total; offset += BATCH_SIZE) {
+      const batchEnd = Math.min(offset + BATCH_SIZE, total);
+      const ids = Array.from(
+        { length: batchEnd - offset },
+        (_, index) => offset + index + 1,
+      );
+      const batch = await Promise.all(
+        ids.map(async (id) => ({
+          id,
+          solar: await context.loaders.solarLoader.load(id),
+          satellite: await context.loaders.satelliteLoader.load(id),
+        })),
+      );
+      for (const { id, solar, satellite } of batch) {
+        const scores = computeScores({ solar, satellite });
+        sumCq += scores.credit_quality;
+        sumGi += scores.green_impact;
+        sumPower += solar.power_output_kw;
 
-      const score = scores.credit_quality + scores.green_impact;
-      if (score > bestScore) {
-        bestScore = score;
-        bestProjId = id;
-      }
-      if (score < worstScore) {
-        worstScore = score;
-        worstProjId = id;
+        const score = scores.credit_quality + scores.green_impact;
+        if (score > bestScore) {
+          bestScore = score;
+          bestProjId = id;
+        }
+        if (score < worstScore) {
+          worstScore = score;
+          worstProjId = id;
+        }
       }
     }
 
@@ -235,12 +246,28 @@ export const graphqlRoot = {
 
   updateProjectScores: async (
     { id, creditQuality, greenImpact }: { id: string; creditQuality: number; greenImpact: number },
-    context: GraphQLContext
+    context: GraphQLContext,
   ) => {
     if (!context.isAdmin) {
       throw new Error("Unauthorized: Admin access required");
     }
-    const projectId = parseInt(id, 10);
+    if (!/^\d+$/.test(String(id).trim())) {
+      throw new Error("Invalid project id: must be a positive integer");
+    }
+    const projectId = parseInt(String(id).trim(), 10);
+    if (!Number.isInteger(projectId) || projectId < 1) {
+      throw new Error("Invalid project id: must be a positive integer");
+    }
+    const total = await getTotalProjects();
+    if (projectId > total) {
+      throw new Error(`Invalid project id ${projectId}: must be between 1 and ${total}`);
+    }
+    if (!Number.isInteger(creditQuality) || creditQuality < 0 || creditQuality > 100) {
+      throw new Error("creditQuality must be an integer between 0 and 100");
+    }
+    if (!Number.isInteger(greenImpact) || greenImpact < 0 || greenImpact > 100) {
+      throw new Error("greenImpact must be an integer between 0 and 100");
+    }
     const tx_hash = await updateImpactScore(projectId, creditQuality, greenImpact);
 
     recordAudit({

@@ -1,4 +1,5 @@
 import crypto from "crypto";
+import { timingSafeCompare } from "./timing-safe";
 
 export interface ApiKey {
   id: string;
@@ -9,6 +10,18 @@ export interface ApiKey {
   usage_count: number;
   last_used_at: number | null;
   created_at: number;
+  rotation_interval_days?: number;
+  next_rotation_at?: number;
+  old_key?: string;
+  new_key_expires_at?: number;
+  last_rotated_at?: number;
+}
+
+export interface RotationNotification {
+  key_id: string;
+  consumer_name: string;
+  rotated_at: number;
+  old_key_expires_at: number;
 }
 
 // In-memory store for API keys
@@ -17,9 +30,31 @@ const keysStore = new Map<string, ApiKey>();
 // In-memory rate limiting tracks: keyId -> { currentMinute, count }
 const rateLimitMap = new Map<string, { currentMinute: number; count: number }>();
 
-export function generateApiKey(consumerName: string, rateLimit = 100): ApiKey {
+// Rotation notification callbacks
+const rotationCallbacks: Array<(notification: RotationNotification) => void> = [];
+
+export function onRotation(callback: (notification: RotationNotification) => void): void {
+  rotationCallbacks.push(callback);
+}
+
+function emitRotationNotification(notification: RotationNotification): void {
+  for (const callback of rotationCallbacks) {
+    try {
+      callback(notification);
+    } catch {
+      // Ignore callback errors
+    }
+  }
+}
+
+export function generateApiKey(
+  consumerName: string,
+  rateLimit = 100,
+  rotationIntervalDays?: number,
+): ApiKey {
   const id = crypto.randomUUID();
   const key = `hk_live_${crypto.randomBytes(24).toString("hex")}`;
+  const now = Date.now();
   const apiKey: ApiKey = {
     id,
     key,
@@ -28,19 +63,47 @@ export function generateApiKey(consumerName: string, rateLimit = 100): ApiKey {
     rate_limit: rateLimit,
     usage_count: 0,
     last_used_at: null,
-    created_at: Date.now(),
+    created_at: now,
   };
+
+  if (rotationIntervalDays && rotationIntervalDays > 0) {
+    apiKey.rotation_interval_days = rotationIntervalDays;
+    apiKey.next_rotation_at = now + rotationIntervalDays * 24 * 60 * 60 * 1000;
+  }
+
   keysStore.set(id, apiKey);
   return apiKey;
 }
 
-export function rotateApiKey(id: string): ApiKey | null {
+export function rotateApiKey(id: string, gracePeriodMs?: number): ApiKey | null {
   const apiKey = keysStore.get(id);
   if (!apiKey || apiKey.status === "revoked") return null;
 
   const newKey = `hk_live_${crypto.randomBytes(24).toString("hex")}`;
+  const now = Date.now();
+
+  // Store old key for grace period if specified
+  if (gracePeriodMs && gracePeriodMs > 0) {
+    apiKey.old_key = apiKey.key;
+    apiKey.new_key_expires_at = now + gracePeriodMs;
+  }
+
   apiKey.key = newKey;
+  apiKey.last_rotated_at = now;
+
+  if (apiKey.rotation_interval_days) {
+    apiKey.next_rotation_at = now + apiKey.rotation_interval_days * 24 * 60 * 60 * 1000;
+  }
+
   keysStore.set(id, apiKey);
+
+  emitRotationNotification({
+    key_id: id,
+    consumer_name: apiKey.consumer_name,
+    rotated_at: now,
+    old_key_expires_at: apiKey.new_key_expires_at ?? now,
+  });
+
   return apiKey;
 }
 
@@ -62,12 +125,65 @@ export function getApiKeyDetails(id: string): ApiKey | null {
 }
 
 export function validateApiKey(key: string): ApiKey | null {
+  const now = Date.now();
   for (const apiKey of keysStore.values()) {
-    if (apiKey.key === key && apiKey.status === "active") {
+    if (apiKey.status !== "active") continue;
+
+    // Check current key (constant-time comparison to prevent timing attacks)
+    if (timingSafeCompare(apiKey.key, key)) {
       return apiKey;
+    }
+
+    // Check old key during grace period (constant-time comparison to prevent timing attacks)
+    if (apiKey.old_key && apiKey.new_key_expires_at && now < apiKey.new_key_expires_at) {
+      if (timingSafeCompare(apiKey.old_key, key)) {
+        return apiKey;
+      }
     }
   }
   return null;
+}
+
+export function resolveAuthContext(headers: any): {
+  providedKey: string;
+  isAdmin: boolean;
+  isConsumer: boolean;
+  consumerName: string;
+  keyRecord: ApiKey | null;
+  rateLimited: boolean;
+} {
+  const authHeader = headers.authorization;
+  const apiKeyHeader = headers["x-api-key"];
+  let providedKey = "";
+
+  if (apiKeyHeader && typeof apiKeyHeader === "string") {
+    providedKey = apiKeyHeader;
+  } else if (authHeader && typeof authHeader === "string" && authHeader.startsWith("Bearer ")) {
+    providedKey = authHeader.substring(7);
+  }
+
+  let isAdmin = false;
+  let isConsumer = false;
+  let consumerName = "";
+  let keyRecord: ApiKey | null = null;
+  let rateLimited = false;
+
+  const adminKey = process.env.ADMIN_API_KEY;
+  if (adminKey && timingSafeCompare(providedKey, adminKey)) {
+    isAdmin = true;
+  } else if (providedKey) {
+    keyRecord = validateApiKey(providedKey);
+    if (keyRecord) {
+      if (isRateLimited(keyRecord.id, keyRecord.rate_limit)) {
+        rateLimited = true;
+      } else {
+        isConsumer = true;
+        consumerName = keyRecord.consumer_name;
+      }
+    }
+  }
+
+  return { providedKey, isAdmin, isConsumer, consumerName, keyRecord, rateLimited };
 }
 
 export function incrementUsage(id: string): void {
@@ -100,4 +216,51 @@ export function isRateLimited(id: string, rateLimit: number): boolean {
 export function clearApiKeys(): void {
   keysStore.clear();
   rateLimitMap.clear();
+}
+
+export function checkScheduledRotations(): ApiKey[] {
+  const now = Date.now();
+  const rotated: ApiKey[] = [];
+
+  for (const apiKey of keysStore.values()) {
+    if (apiKey.status !== "active") continue;
+    if (!apiKey.next_rotation_at) continue;
+    if (now >= apiKey.next_rotation_at) {
+      const result = rotateApiKey(apiKey.id);
+      if (result) {
+        rotated.push(result);
+      }
+    }
+  }
+
+  return rotated;
+}
+
+export function getRotationStatus(): {
+  keys_with_scheduled_rotation: number;
+  keys_pending_rotation: number;
+  next_rotation_at: number | null;
+} {
+  const now = Date.now();
+  let keysWithScheduled = 0;
+  let keysPending = 0;
+  let nextRotationAt: number | null = null;
+
+  for (const apiKey of keysStore.values()) {
+    if (apiKey.status !== "active") continue;
+    if (!apiKey.next_rotation_at) continue;
+
+    keysWithScheduled++;
+    if (now >= apiKey.next_rotation_at) {
+      keysPending++;
+    } else if (nextRotationAt === null || apiKey.next_rotation_at < nextRotationAt) {
+      nextRotationAt = apiKey.next_rotation_at;
+    }
+  }
+
+  return {
+    keys_with_scheduled_rotation: keysWithScheduled,
+    keys_pending_rotation: keysPending,
+    next_rotation_at: nextRotationAt,
+  };
 }

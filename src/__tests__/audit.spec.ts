@@ -139,5 +139,49 @@ describe("audit trail", () => {
       expect(res.body.count).toBe(1);
       expect(res.body.entries[0].project_id).toBe(1);
     });
+
+    describe("Audit Logging Specifications (Issue #270)", () => {
+      it("verifies admin action creates audit log with required fields and timestamp", () => {
+        const entry = recordAudit({
+          project_id: 42,
+          credit_quality: 95,
+          green_impact: 88,
+          tx_hash: "0x123abc",
+          triggered_by: "admin",
+        });
+
+        expect(entry).toHaveProperty("id");
+        expect(entry).toHaveProperty("timestamp");
+        expect(entry.project_id).toBe(42);
+        expect(entry.credit_quality).toBe(95);
+        expect(entry.green_impact).toBe(88);
+        expect(entry.tx_hash).toBe("0x123abc");
+        expect(entry.triggered_by).toBe("admin");
+      });
+
+      it("ensures audit log entries are JSON-structured objects", () => {
+        recordAudit({
+          project_id: 10,
+          credit_quality: 75,
+          green_impact: 80,
+          tx_hash: "tx-json",
+          triggered_by: "system",
+        });
+        const logs = getAuditLog({ project_id: 10 });
+        expect(Array.isArray(logs)).toBe(true);
+        expect(logs[0]).toEqual(
+          expect.objectContaining({
+            id: expect.any(Number),
+            timestamp: expect.any(Number),
+            project_id: 10,
+            credit_quality: 75,
+            green_impact: 80,
+            tx_hash: "tx-json",
+            triggered_by: "system",
+          }),
+        );
+      });
+    });
   });
 });
+
