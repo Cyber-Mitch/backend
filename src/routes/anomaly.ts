@@ -12,6 +12,18 @@ import { parseProjectId, badRequest } from "../middleware/errors";
 const router = Router();
 
 /**
+ * GET /v1/anomaly/config
+ * Return the current anomaly detection configuration.
+ */
+router.get("/config", (_req: Request, res: Response) => {
+  res.json(getAnomalyConfig());
+});
+
+router.get("/", (_req: Request, res: Response) => {
+  res.json(getAnomalyConfig());
+});
+
+/**
  * GET /v1/anomaly/:id
  * Run anomaly detection on a project's latest IoT readings.
  * Query params:
@@ -55,14 +67,6 @@ router.get("/:id", (req: Request, res: Response, next: NextFunction) => {
   } catch (err) {
     next(err);
   }
-});
-
-/**
- * GET /v1/anomaly/config
- * Return the current anomaly detection configuration.
- */
-router.get("/", (_req: Request, res: Response) => {
-  res.json(getAnomalyConfig());
 });
 
 export default router;

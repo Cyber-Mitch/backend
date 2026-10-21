@@ -118,8 +118,18 @@ router.post("/", async (req: Request, res: Response) => {
     fetchUrl?: string;
   };
 
-  if (!name || typeof name !== "string") {
-    return res.status(400).json({ error: "name is required" });
+  const NAME_RE = /^[a-z0-9_-]{1,64}$/i;
+  if (!name || typeof name !== "string" || !NAME_RE.test(name.trim())) {
+    return res.status(400).json({ error: "name must be 1-64 characters (alphanumeric, dash, underscore)" });
+  }
+
+  const cleanName = name.trim();
+  if (cleanName === "sentinel-2" || cleanName === "landsat-8") {
+    return res.status(400).json({ error: `Cannot replace built-in source "${cleanName}"` });
+  }
+
+  if (priority !== undefined && (!Number.isInteger(priority) || priority < 1)) {
+    return res.status(400).json({ error: "priority must be a positive integer" });
   }
 
   if (!fetchUrl || typeof fetchUrl !== "string") {
@@ -138,17 +148,21 @@ router.post("/", async (req: Request, res: Response) => {
 
   const sourcePriority = typeof priority === "number" ? priority : 99;
 
-  registerSource(
-    {
-      name,
-      priority: sourcePriority,
-      enabled: true,
-      fetch: (projectId: number) => fetchFromCustomUrl(projectId, name),
-    },
-    validatedUrl,
-  );
+  try {
+    registerSource(
+      {
+        name: cleanName,
+        priority: sourcePriority,
+        enabled: true,
+        fetch: (projectId: number) => fetchFromCustomUrl(projectId, cleanName),
+      },
+      validatedUrl,
+    );
+  } catch (err) {
+    return res.status(400).json({ error: err instanceof Error ? err.message : String(err) });
+  }
 
-  res.status(201).json({ ok: true, name, priority: sourcePriority });
+  res.status(201).json({ ok: true, name: cleanName, priority: sourcePriority });
 });
 
 /**
