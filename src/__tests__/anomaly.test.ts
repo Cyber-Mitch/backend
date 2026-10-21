@@ -110,7 +110,7 @@ describe("Anomaly Detection Engine", () => {
 
     it("emits low severity for a trend just over the threshold", () => {
       for (let i = 0; i < 5; i++) detectAnomalies(1, baseReadings);
-      const res = detectAnomalies(1, { ...baseReadings, efficiency_pct: 64 }); // -20%+
+      const res = detectAnomalies(1, { ...baseReadings, efficiency_pct: 63 }); // -21.25%
       const t = res.anomalies.find((a) => a.type === "trend" && a.metric === "efficiency_pct");
       expect(t?.severity).toBe("low");
     });
