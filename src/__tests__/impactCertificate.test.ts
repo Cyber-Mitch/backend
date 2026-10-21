@@ -18,12 +18,31 @@ describe("impact certificates", () => {
     expect(certificate.projects[0].measured_output_kwh).toBe(87600);
     expect(certificate.projects[0].pool_share_bps).toBe(10000);
     expect(certificate.signature.value).toBeTruthy();
+    const publicKey = createPublicKey({
+      key: Buffer.from(getImpactCertificatePublicKey(), "base64"),
+      format: "der",
+      type: "spki",
+    });
+    expect(publicKey).toBeTruthy();
+
+    const { signature, ...unsigned } = certificate;
     expect(
-      createPublicKey({
-        key: Buffer.from(getImpactCertificatePublicKey(), "base64"),
-        format: "der",
-        type: "spki",
-      }),
-    ).toBeTruthy();
+      verify(
+        null,
+        Buffer.from(JSON.stringify(unsigned)),
+        publicKey,
+        Buffer.from(signature.value, "base64"),
+      ),
+    ).toBe(true);
+
+    const tampered = { ...unsigned, period: "2026-Q4" };
+    expect(
+      verify(
+        null,
+        Buffer.from(JSON.stringify(tampered)),
+        publicKey,
+        Buffer.from(signature.value, "base64"),
+      ),
+    ).toBe(false);
   });
 });

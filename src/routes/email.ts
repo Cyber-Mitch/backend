@@ -63,8 +63,7 @@ publicEmailRouter.get("/unsubscribe", handlePublicUnsubscribe);
  */
 publicEmailRouter.post("/unsubscribe", handlePublicUnsubscribe);
 
-/** POST /email/subscribe — { email, frequency? } */
-router.post("/subscribe", (req: Request, res: Response) => {
+function handleSubscribe(req: Request, res: Response) {
   const { email, frequency } = req.body as { email?: unknown; frequency?: unknown };
   if (typeof email !== "string" || !EMAIL_RE.test(email)) {
     throw badRequest("email must be a valid email address");
@@ -79,7 +78,13 @@ router.post("/subscribe", (req: Request, res: Response) => {
     unsubscribe_token: sub.unsubscribe_token,
     subscribed_at: sub.subscribed_at,
   });
-});
+}
+
+/** Public subscribe endpoint (#892) */
+publicEmailRouter.post("/subscribe", handleSubscribe);
+
+/** POST /email/subscribe — { email, frequency? } */
+router.post("/subscribe", handleSubscribe);
 
 // GET /email/unsubscribe moved to `publicEmailRouter` above so recipients
 // can actually reach the endpoint from a mail client. See #763.
@@ -99,11 +104,14 @@ router.get("/thresholds", (_req: Request, res: Response) => {
 });
 
 /** PUT /email/thresholds — update alert thresholds. */
-router.put("/thresholds", (req: Request, res: Response) => {
+router.put("/thresholds", (req: Request, res: Response, next: NextFunction) => {
   try {
     res.json(setThresholds(req.body ?? {}));
   } catch (err) {
-    throw badRequest(err instanceof Error ? err.message : "invalid thresholds");
+    if (err instanceof Error && err.message.includes("must be a non-negative number")) {
+      throw badRequest(err.message);
+    }
+    next(err);
   }
 });
 
@@ -117,6 +125,9 @@ router.put("/templates", (req: Request, res: Response) => {
   const { name, subject, body } = req.body as { name?: unknown; subject?: unknown; body?: unknown };
   if (typeof name !== "string" || typeof subject !== "string" || typeof body !== "string") {
     throw badRequest("template requires string name, subject and body");
+  }
+  if (name.length > 100 || subject.length > 200 || body.length > 10000) {
+    throw badRequest("template fields exceed allowed length limits");
   }
   res.json(upsertTemplate({ name, subject, body }));
 });

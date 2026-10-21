@@ -22,8 +22,9 @@ function parseOptionalFloat(raw: string | undefined, field: string): number | un
 }
 
 function parseForecastField(raw: string | undefined): "power_output_kw" | "efficiency_pct" {
+  if (raw === undefined || raw === "power_output_kw") return "power_output_kw";
   if (raw === "efficiency_pct") return "efficiency_pct";
-  return "power_output_kw";
+  throw badRequest(`Invalid field "${raw}". Allowed values: power_output_kw, efficiency_pct`);
 }
 
 router.get("/:id", (req: Request, res: Response, next: NextFunction) => {

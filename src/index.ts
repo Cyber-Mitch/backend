@@ -192,7 +192,7 @@ app.get("/ready", (_req, res) => {
 });
 
 // ── Metrics dashboard ────────────────────────────────────────────────────────
-app.get("/v1/metrics", adminLimiter, (_req, res) => {
+app.get("/v1/metrics", adminLimiter, requireAdminBearer, (_req, res) => {
   res.json(getMetrics());
 });
 
@@ -202,7 +202,7 @@ app.get("/v1/admin/compression", ipWhitelist, adminLimiter, (_req, res) => {
 });
 
 // ── Trace export ─────────────────────────────────────────────────────────────
-app.get("/v1/traces", adminLimiter, (req, res) => {
+app.get("/v1/traces", adminLimiter, requireAdminBearer, (req, res) => {
   const correlationId = req.query.correlation_id as string | undefined;
   const limit = Math.min(parseInt((req.query.limit as string) || "100", 10), 500);
   const since = req.query.since ? parseInt(req.query.since as string, 10) : undefined;
@@ -223,12 +223,12 @@ app.use("/docs", swaggerUi.serve, swaggerUi.setup(openApiSpec));
 app.get("/docs.json", (_req, res) => res.json(openApiSpec));
 
 // ── Secrets status endpoint ─────────────────────────────────────────────────
-app.get("/v1/admin/secrets/status", ipWhitelist, adminLimiter, (_req, res) => {
+app.get("/v1/admin/secrets/status", ipWhitelist, adminLimiter, requireAdminBearer, (_req, res) => {
   res.json(getSecretsStatus());
 });
 
 // ── Migration management ──────────────────────────────────────────────────
-app.get("/v1/admin/migrations", ipWhitelist, adminLimiter, async (_req, res, next) => {
+app.get("/v1/admin/migrations", ipWhitelist, adminLimiter, requireAdminBearer, async (_req, res, next) => {
   try {
     const status = await getMigrationStatus();
     res.json(status);
@@ -237,7 +237,7 @@ app.get("/v1/admin/migrations", ipWhitelist, adminLimiter, async (_req, res, nex
   }
 });
 
-app.post("/v1/admin/migrations/up", ipWhitelist, adminLimiter, async (_req, res, next) => {
+app.post("/v1/admin/migrations/up", ipWhitelist, adminLimiter, requireAdminBearer, async (_req, res, next) => {
   try {
     const result = await runMigrations();
     res.json(result);
@@ -246,7 +246,7 @@ app.post("/v1/admin/migrations/up", ipWhitelist, adminLimiter, async (_req, res,
   }
 });
 
-app.post("/v1/admin/migrations/rollback", ipWhitelist, adminLimiter, async (_req, res, next) => {
+app.post("/v1/admin/migrations/rollback", ipWhitelist, adminLimiter, requireAdminBearer, async (_req, res, next) => {
   try {
     const result = await rollbackMigration();
     res.json(result);
@@ -256,11 +256,11 @@ app.post("/v1/admin/migrations/rollback", ipWhitelist, adminLimiter, async (_req
 });
 
 // ── Log level management ───────────────────────────────────────────────────
-app.get("/v1/admin/logging/level", ipWhitelist, adminLimiter, (_req, res) => {
+app.get("/v1/admin/logging/level", ipWhitelist, adminLimiter, requireAdminBearer, (_req, res) => {
   res.json({ level: getLogLevel() });
 });
 
-app.put("/v1/admin/logging/level", ipWhitelist, adminLimiter, (req, res) => {
+app.put("/v1/admin/logging/level", ipWhitelist, adminLimiter, requireAdminBearer, (req, res) => {
   const { level } = req.body as { level?: string };
   if (!level) {
     res.status(400).json({ error: "missing_level", message: "Log level is required" });
@@ -277,14 +277,14 @@ app.put("/v1/admin/logging/level", ipWhitelist, adminLimiter, (req, res) => {
 });
 
 // ── Feature flag analytics ───────────────────────────────────────────────
-app.get("/v1/admin/feature-flags/analytics", ipWhitelist, adminLimiter, (_req, res) => {
+app.get("/v1/admin/feature-flags/analytics", ipWhitelist, adminLimiter, requireAdminBearer, (_req, res) => {
   res.json(getFlagAnalytics());
 });
 
 // Register feature flag CRUD routes under /v1/admin
 const flagAdminRouter = express.Router();
 registerFlagRoutes(flagAdminRouter);
-app.use("/v1/admin", ipWhitelist, adminLimiter, flagAdminRouter);
+app.use("/v1/admin", ipWhitelist, adminLimiter, requireAdminBearer, flagAdminRouter);
 
 // ── v1 routes (current) ──────────────────────────────────────────────────────
 const v1 = express.Router();
@@ -303,7 +303,7 @@ v1.use("/projects/:id/history", publicLimiter, apiKeyAuth, historyRouter);
 v1.use("/projects/:id/price-history", publicLimiter, apiKeyAuth, priceHistoryRouter);
 v1.use("/projects", publicLimiter, apiKeyAuth, projectsRouter);
 v1.use("/portfolio", publicLimiter, apiKeyAuth, portfolioRouter);
-v1.use("/roles", ipWhitelist, adminLimiter, rolesRouter);
+v1.use("/roles", ipWhitelist, adminLimiter, requireAdminBearer, rolesRouter);
 v1.use("/webhooks", ipWhitelist, adminLimiter, requestSigning, webhooksRouter);
 v1.use("/panels", ipWhitelist, adminLimiter, requestSigning, panelsRouter);
 v1.use("/metadata", ipWhitelist, adminLimiter, metadataRouter);
@@ -557,9 +557,9 @@ function bootstrap(): void {
   // where gRPC is running but HTTP isn't (or vice versa).
   let grpcServer: grpc.Server | null = null;
 
-app.get("/graphql-playground", (req, res) => {
-  res.setHeader("Content-Type", "text/html");
-  res.send(`
+  app.get("/graphql-playground", (req, res) => {
+    res.setHeader("Content-Type", "text/html");
+    res.send(`
     <!DOCTYPE html>
     <html>
       <head>
@@ -598,10 +598,19 @@ app.get("/graphql-playground", (req, res) => {
       </body>
     </html>
   `);
-});
+  });
 
+  // Coordinated HTTP + gRPC startup. The block was previously bare at the
+  // top level of `bootstrap` (which is `void`) and parsed with a stray
+  // `});` close — tsc reported TS1128 at the next statement and prettier
+  // refused to parse the file at all. Wrap it in a self-executing async
+  // IIFE so the awaits are inside an async context and the structural
+  // mismatch is gone. The resulting promise is held in `serverPromise`
+  // so `gracefulShutdown.closeHttpServer` can still await the http
+  // server instance.
+  const serverPromise: Promise<import("http").Server> = (async () => {
     // First, start HTTP server
-    const httpServer = await new Promise<any>((resolve, reject) => {
+    const httpServer = await new Promise<import("http").Server>((resolve, reject) => {
       const server = app.listen(PORT, () => {
         logger.info(`[startup] HTTP server listening on port ${PORT}`);
         resolve(server);
@@ -638,6 +647,11 @@ app.get("/graphql-playground", (req, res) => {
     // Real-time score updates over WebSocket (ws://<host>/ws)
     attachWebSocketServer(httpServer);
     return httpServer;
+  })();
+
+  serverPromise.catch((err) => {
+    logger.error("[startup] unhandled startup failure", logger.formatError(err));
+    process.exit(1);
   });
 
   // GraphQL endpoint and playground setup
