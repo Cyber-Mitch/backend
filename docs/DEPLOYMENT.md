@@ -21,7 +21,6 @@ and take neighbouring services down with it.
 | CPU          | 0.5 core | 0.25 core   | `docker-compose.yml`               |
 | V8 heap      | 384 MB   | n/a         | `NODE_OPTIONS` in the `Dockerfile` |
 | Redis memory | 256 MB   | 64 MB       | `docker-compose.yml`               |
-| Redis CPU    | 0.25     | 0.1         | `docker-compose.yml`               |
 
 ### Why the heap ceiling is lower than the memory limit
 
