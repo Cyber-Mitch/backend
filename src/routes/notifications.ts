@@ -7,15 +7,17 @@ import {
   unsubscribe,
   NotificationEventType,
 } from "../lib/notifications";
+import { validateStellarAddress } from "../lib/vault";
 
 const router = Router();
 
-// Stellar accounts (G...) and contract ids (C...) are 56-char strbase32.
-const ADDRESS_RE = /^[GC][A-Z2-7]{55}$/;
-
 function address(req: Request): string {
-  const a = String(req.params.address);
-  if (!ADDRESS_RE.test(a)) throw badRequest("address must be a valid Stellar address");
+  const a = String(req.params.address).trim();
+  try {
+    validateStellarAddress(a);
+  } catch (err) {
+    throw badRequest(err instanceof Error ? err.message : "address must be a valid Stellar address");
+  }
   return a;
 }
 

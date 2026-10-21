@@ -204,6 +204,7 @@ router.get("/:id", async (req: Request, res: Response, next: NextFunction) => {
         ndvi_score: satellite.ndvi_score,
         timestamp: Math.max(solar.timestamp, satellite.timestamp),
         funding: seededRandom(id * 13 + 7) * 1000000,
+        funding_source: "simulated",
       },
       // Surface whether the backend holds metadata for the project so the
       // frontend's optional `verifiedMetadata` flag is meaningful.

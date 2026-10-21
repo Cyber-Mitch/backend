@@ -146,13 +146,16 @@ creatorApplicationsRouter.get(
       }
 
       const sequence = String(req.query.sequence ?? "0");
-      if (!/^\d+$/.test(sequence))
-        throw badRequest("sequence must be a non-negative integer string");
+      if (!/^\d+$/.test(sequence) || sequence.length > 19)
+        throw badRequest("sequence must be a non-negative integer string up to 19 digits");
       const maturityRaw = String(req.query.maturity_date ?? "0");
-      if (!/^\d+$/.test(maturityRaw)) {
-        throw badRequest("maturity_date must be a non-negative integer (unix seconds)");
+      if (!/^\d+$/.test(maturityRaw) || maturityRaw.length > 19) {
+        throw badRequest("maturity_date must be a non-negative integer (unix seconds) up to 19 digits");
       }
       const maturityDate = Number(maturityRaw);
+      if (!Number.isFinite(maturityDate) || maturityDate < 0 || BigInt(maturityRaw) > 18446744073709551615n) {
+        throw badRequest("maturity_date exceeds maximum allowed range");
+      }
 
       const xdr = buildCreateProjectTx({
         contractId,
@@ -191,8 +194,20 @@ function applicationId(req: Request): string {
 }
 
 /** GET /v1/admin/creators/applications — list applications. */
-creatorAdminRouter.get("/applications", (_req: Request, res: Response) => {
-  res.json({ applications: listApplications() });
+creatorAdminRouter.get("/applications", (req: Request, res: Response) => {
+  const allApps = listApplications();
+  const limitRaw = req.query.limit;
+  const offsetRaw = req.query.offset;
+  const limit = limitRaw !== undefined ? Math.min(100, Math.max(1, Number(limitRaw) || 20)) : 20;
+  const offset = offsetRaw !== undefined ? Math.max(0, Number(offsetRaw) || 0) : 0;
+  const paginated = allApps.slice(offset, offset + limit);
+  res.json({
+    applications: paginated,
+    total: allApps.length,
+    offset,
+    limit,
+    hasMore: offset + paginated.length < allApps.length,
+  });
 });
 
 /** GET /v1/admin/creators/applications/:id — fetch one application. */

@@ -1,6 +1,7 @@
 import { Router, Request, Response, NextFunction } from "express";
 import { parseOptionalInt, errorBody } from "../middleware/errors";
 import { loadProjectScores, computeAggregateScores, inferCategory, REGIONS, type Category, type Region } from "../lib/aggregation";
+import { getTotalProjects } from "../lib/stellar/project-registry";
 
 const router = Router();
 
@@ -20,8 +21,15 @@ const VALID_REGIONS = new Set<Region>(REGIONS);
  */
 router.get("/", async (req: Request, res: Response, next: NextFunction) => {
   try {
+    if (req.query.limit !== undefined) {
+      const parsedLimit = Number(req.query.limit);
+      if (!Number.isInteger(parsedLimit) || parsedLimit <= 0) {
+        res.status(400).json(errorBody("bad_request", "limit must be an integer greater than 0"));
+        return;
+      }
+    }
     const limit = Math.min(parseOptionalInt(req.query.limit as string | undefined, "limit", 20), 100);
-    const cursor = parseOptionalInt(req.query.cursor as string | undefined, "cursor", 0);
+    const cursor = Math.max(parseOptionalInt(req.query.cursor as string | undefined, "cursor", 0), 0);
     const categoryFilter = req.query.category as string | undefined;
     const regionFilter = req.query.region as string | undefined;
 
@@ -35,23 +43,29 @@ router.get("/", async (req: Request, res: Response, next: NextFunction) => {
       return;
     }
 
-    // Build the project id list for this page (1-indexed)
-    const projectIds = Array.from({ length: limit }, (_, i) => cursor + i + 1);
-
-    let projects = loadProjectScores(projectIds);
+    const totalProjects = await getTotalProjects();
+    const allIds = Array.from({ length: totalProjects }, (_, i) => i + 1);
+    let allProjects = loadProjectScores(allIds);
 
     if (categoryFilter) {
-      projects = projects.filter((p) => p.category === categoryFilter);
+      allProjects = allProjects.filter((p) => p.category === categoryFilter);
     }
     if (regionFilter) {
-      projects = projects.filter((p) => p.region === regionFilter);
+      allProjects = allProjects.filter((p) => p.region === regionFilter);
     }
 
-    const aggregate = computeAggregateScores(projects);
+    const total = allProjects.length;
+    const pageProjects = allProjects.slice(cursor, cursor + limit);
+    const hasMore = cursor + pageProjects.length < total;
+    const nextCursor = hasMore ? cursor + pageProjects.length : cursor + pageProjects.length;
+
+    const aggregate = computeAggregateScores(pageProjects);
 
     res.json({
       ...aggregate,
-      cursor: cursor + limit,
+      cursor: nextCursor,
+      hasMore,
+      total,
       limit,
     });
   } catch (err) {

@@ -61,6 +61,7 @@ async function getPortfolioData() {
       satellite,
       scores,
       funding,
+      funding_source: "simulated",
       actual_vs_expected_ratio,
     };
   });
@@ -258,8 +259,13 @@ router.get("/financial-summary", async (_req: Request, res: Response, next: Next
 });
 
 // GET /compliance-report — Compliance Reports
-router.get("/compliance-report", async (_req: Request, res: Response, next: NextFunction) => {
+router.get("/compliance-report", async (req: Request, res: Response, next: NextFunction) => {
   try {
+    const rawLimit = req.query.limit !== undefined ? Number(req.query.limit) : 50;
+    const rawOffset = req.query.offset !== undefined ? Number(req.query.offset) : 0;
+    const limit = Math.min(100, Math.max(1, Number.isFinite(rawLimit) ? rawLimit : 50));
+    const offset = Math.max(0, Number.isFinite(rawOffset) ? rawOffset : 0);
+
     const portfolio = await getPortfolioData();
     const reports = portfolio.map((p) => {
       // ESG status based on credit quality and green impact
@@ -305,7 +311,7 @@ router.get("/compliance-report", async (_req: Request, res: Response, next: Next
         portfolio_status: portfolioStatus,
       },
       projects: reports,
-      audit_logs: getAuditLog(),
+      audit_logs: getAuditLog({ limit, offset }),
     });
   } catch (error) {
     next(error);
@@ -320,6 +326,9 @@ router.post("/custom-report", async (req: Request, res: Response, next: NextFunc
     if (project_ids !== undefined) {
       if (!Array.isArray(project_ids)) {
         throw badRequest("project_ids must be an array of positive integers");
+      }
+      if (project_ids.length > 20) {
+        throw badRequest("project_ids cannot exceed 20 projects");
       }
       if (!project_ids.every((n) => Number.isInteger(n) && n >= 1)) {
         throw badRequest("project_ids must contain only positive integers");
