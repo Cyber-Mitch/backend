@@ -111,20 +111,9 @@ export function computeAggregateScores(projects: ProjectScore[]): AggregateResul
     };
   }
 
-  // Historical trend: simulate past periods based on current snapshot
-  // (real trend would query time-series data; this is the baseline structure)
+  // Current trend snapshot (#874: removed synthetic past offsets)
   const trend: AggregationTrend[] = [
     { period: "current", avg_credit_quality: weighted_avg_credit_quality, avg_green_impact: weighted_avg_green_impact },
-    {
-      period: "last_hour",
-      avg_credit_quality: Math.max(0, Math.round((weighted_avg_credit_quality - 2) * 10) / 10),
-      avg_green_impact: Math.max(0, Math.round((weighted_avg_green_impact - 3) * 10) / 10),
-    },
-    {
-      period: "last_day",
-      avg_credit_quality: Math.max(0, Math.round((weighted_avg_credit_quality - 5) * 10) / 10),
-      avg_green_impact: Math.max(0, Math.round((weighted_avg_green_impact - 8) * 10) / 10),
-    },
   ];
 
   return { total_projects: projects.length, weighted_avg_credit_quality, weighted_avg_green_impact, by_category, by_region, trend };

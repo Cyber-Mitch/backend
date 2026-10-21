@@ -58,25 +58,32 @@ function evictStaleJobs(): void {
   const now = Date.now();
   const jobArray = Array.from(jobs.entries());
 
-  // Evict jobs older than TTL
+  // Evict jobs older than TTL and transition stuck running/queued jobs to failed
   for (const [id, job] of jobArray) {
     if ((job.status === "completed" || job.status === "failed") && job.completed_at) {
       const completedTime = new Date(job.completed_at).getTime();
       if (now - completedTime > BATCH_JOB_TTL_MS) {
         jobs.delete(id);
       }
+    } else if (job.status === "running" || job.status === "queued") {
+      const createdTime = new Date(job.created_at).getTime();
+      if (now - createdTime > BATCH_JOB_TTL_MS) {
+        job.status = "failed";
+        job.completed_at = new Date().toISOString();
+      }
     }
   }
 
-  // Enforce max size - remove oldest completed/failed jobs first
+  // Enforce max size - remove oldest completed/failed jobs, falling back to oldest by created_at
   if (jobs.size > BATCH_JOB_MAX_SIZE) {
-    const sortedJobs = Array.from(jobs.entries())
-      .filter(([_, job]) => job.status === "completed" || job.status === "failed")
-      .sort((a, b) => {
-        const timeA = a[1].completed_at ? new Date(a[1].completed_at).getTime() : 0;
-        const timeB = b[1].completed_at ? new Date(b[1].completed_at).getTime() : 0;
-        return timeA - timeB;
-      });
+    const sortedJobs = Array.from(jobs.entries()).sort((a, b) => {
+      const aTerminal = a[1].status === "completed" || a[1].status === "failed";
+      const bTerminal = b[1].status === "completed" || b[1].status === "failed";
+      if (aTerminal !== bTerminal) return aTerminal ? -1 : 1;
+      const timeA = new Date(a[1].created_at).getTime();
+      const timeB = new Date(b[1].created_at).getTime();
+      return timeA - timeB;
+    });
 
     const toRemove = jobs.size - BATCH_JOB_MAX_SIZE;
     for (let i = 0; i < toRemove && i < sortedJobs.length; i++) {
