@@ -116,8 +116,8 @@ function validateTaskInput(input: TaskInput): Omit<MaintenanceTask, "id" | "stat
   if (typeof assigned_to !== "string" || assigned_to.trim().length === 0) {
     throw new Error("assigned_to must be a non-empty string");
   }
-  if (typeof estimated_cost !== "number" || estimated_cost < 0) {
-    throw new Error("estimated_cost must be a non-negative number");
+  if (typeof estimated_cost !== "number" || !Number.isFinite(estimated_cost) || estimated_cost < 0) {
+    throw new Error("estimated_cost must be a non-negative finite number");
   }
 
   return {
@@ -190,9 +190,16 @@ export function updateTask(id: string, patch: TaskPatch): MaintenanceTask {
     throw new Error("Task not found");
   }
 
+  // Whitelist updateable fields (#875)
   const updated: MaintenanceTask = {
     ...existing,
-    ...patch,
+    ...(typeof patch.title === "string" ? { title: patch.title.trim() } : {}),
+    ...(typeof patch.description === "string" ? { description: patch.description.trim() } : {}),
+    ...(typeof patch.action_type === "string" ? { action_type: patch.action_type.trim() } : {}),
+    ...(typeof patch.priority === "string" && validPriorities.includes(patch.priority as TaskPriority) ? { priority: patch.priority as TaskPriority } : {}),
+    ...(typeof patch.scheduled_date === "string" && /^\d{4}-\d{2}-\d{2}$/.test(patch.scheduled_date) ? { scheduled_date: patch.scheduled_date } : {}),
+    ...(typeof patch.assigned_to === "string" ? { assigned_to: patch.assigned_to.trim() } : {}),
+    ...(typeof patch.estimated_cost === "number" && Number.isFinite(patch.estimated_cost) && patch.estimated_cost >= 0 ? { estimated_cost: patch.estimated_cost } : {}),
     updated_at: now(),
   };
 
