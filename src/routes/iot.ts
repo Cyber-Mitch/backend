@@ -1,6 +1,6 @@
 import { Router, Request, Response, NextFunction } from "express";
-import { parseProjectId } from "../middleware/errors";
-import { fetchSolarData, fetchSatelliteData } from "../providers/registry";
+import { parseProjectId, badRequest } from "../middleware/errors";
+import { fetchSolarData, fetchSatelliteData, getProjectCredentials } from "../providers/registry";
 import { extractApiKeyRole } from "../middleware/requireApiKeyRole";
 
 /**
@@ -20,10 +20,12 @@ router.use(extractApiKeyRole);
 router.get("/solar/:id", async (req: Request, res: Response, next: NextFunction) => {
   try {
     const id = parseProjectId(req.params.id, "project id");
-    // TODO: Load project credentials from database
-    const credentials = undefined; // Will fallback to simulator
+    const credentials = getProjectCredentials(id);
     const reading = await fetchSolarData(id, credentials);
-    res.json(reading);
+    res.json({
+      ...reading,
+      data_source: reading.provenance?.source ?? (credentials ? "solaredge" : "simulator"),
+    });
   } catch (err) {
     next(err);
   }
@@ -37,10 +39,43 @@ router.get("/satellite/:id", async (req: Request, res: Response, next: NextFunct
   try {
     const id = parseProjectId(req.params.id, "project id");
     const polygonParam = req.query.polygon as string | undefined;
-    const polygon = polygonParam ? JSON.parse(polygonParam) : undefined;
-    const credentials = undefined; // Will fallback to simulator
+    let polygon: [number, number][] | undefined = undefined;
+
+    if (polygonParam !== undefined) {
+      try {
+        polygon = JSON.parse(polygonParam);
+      } catch (err) {
+        throw badRequest("polygon must be a valid JSON array of coordinates");
+      }
+
+      if (!Array.isArray(polygon)) {
+        throw badRequest("polygon must be an array of coordinate pairs");
+      }
+
+      if (polygon.length > 500) {
+        throw badRequest("polygon contains too many vertices (max 500)");
+      }
+
+      for (const pt of polygon) {
+        if (
+          !Array.isArray(pt) ||
+          pt.length !== 2 ||
+          typeof pt[0] !== "number" ||
+          typeof pt[1] !== "number" ||
+          !Number.isFinite(pt[0]) ||
+          !Number.isFinite(pt[1])
+        ) {
+          throw badRequest("polygon vertices must be [number, number] coordinates");
+        }
+      }
+    }
+
+    const credentials = getProjectCredentials(id);
     const reading = await fetchSatelliteData(id, polygon, credentials);
-    res.json(reading);
+    res.json({
+      ...reading,
+      data_source: reading.provenance?.source ?? (credentials ? "sentinel-2" : "simulator"),
+    });
   } catch (err) {
     next(err);
   }

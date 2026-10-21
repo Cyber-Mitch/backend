@@ -17,6 +17,7 @@ export interface WebhookConfig {
   max_retries: number;
   retry_delay_ms: number;
   created_at: string;
+  owner?: string;
   last_triggered_at?: string;
 }
 
@@ -64,6 +65,7 @@ export function registerWebhook(
   secret: string,
   maxRetries = 3,
   retryDelayMs = 2000,
+  owner?: string,
 ): WebhookConfig {
   const wh: WebhookConfig = {
     id: `wh_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`,
@@ -72,6 +74,7 @@ export function registerWebhook(
     max_retries: maxRetries,
     retry_delay_ms: retryDelayMs,
     created_at: new Date().toISOString(),
+    owner,
   };
   webhooks.set(wh.id, wh);
   return wh;
@@ -81,8 +84,10 @@ export function removeWebhook(id: string): boolean {
   return webhooks.delete(id);
 }
 
-export function listWebhooks(): WebhookConfig[] {
-  return Array.from(webhooks.values());
+export function listWebhooks(owner?: string): WebhookConfig[] {
+  const all = Array.from(webhooks.values());
+  if (!owner) return all;
+  return all.filter((w) => !w.owner || w.owner === owner);
 }
 
 export function getWebhook(id: string): WebhookConfig | undefined {
