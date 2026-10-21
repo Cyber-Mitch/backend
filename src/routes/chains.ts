@@ -48,15 +48,16 @@ router.post("/broadcast/:projectId", async (req: Request, res: Response, next: N
     const projectId = parseProjectId(req.params.projectId, "project id");
     const { chains } = req.body as { chains?: string[] };
 
-    // Only Stellar has a real cross-chain submission implemented.
-    // EVM chains are not yet supported; return a clear error instead of
-    // fabricating a fake transaction hash.
-    const targetChains = (chains ?? getEnabledChains().map((c) => c.id)) as ChainId[];
-    if (targetChains.some((id) => id !== "stellar")) {
-      return res.status(501).json({
-        error: "EVM chain submission not implemented; only Stellar is currently supported.",
-      });
+    if (chains !== undefined) {
+      if (!Array.isArray(chains)) {
+        return res.status(400).json({ error: "chains must be an array of chain identifiers" });
+      }
+      if (chains.length === 0) {
+        return res.status(400).json({ error: "chains array must not be empty" });
+      }
     }
+
+    const targetChains = (chains ?? getEnabledChains().map((c) => c.id)) as ChainId[];
 
     const solar = getSolarData(projectId);
     const satellite = getSatelliteData(projectId);
@@ -66,7 +67,7 @@ router.post("/broadcast/:projectId", async (req: Request, res: Response, next: N
       projectId,
       scores.credit_quality,
       scores.green_impact,
-      targetChains.length > 0 ? targetChains : undefined,
+      targetChains,
     );
 
     res.json(result);

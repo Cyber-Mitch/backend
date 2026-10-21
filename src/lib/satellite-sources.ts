@@ -203,6 +203,12 @@ const landsatSource: SatelliteDataSource = {
   },
 };
 
+export const BUILTIN_SOURCES = new Set<string>(["sentinel-2", "landsat-8"]);
+
+export function isBuiltinSource(name: string): boolean {
+  return BUILTIN_SOURCES.has(name);
+}
+
 const sources: SatelliteDataSource[] = [sentinel2Source, landsatSource];
 
 /**
@@ -213,6 +219,9 @@ const sources: SatelliteDataSource[] = [sentinel2Source, landsatSource];
 const customFetchUrls = new Map<string, string>();
 
 export function registerSource(source: SatelliteDataSource, fetchUrl?: string): void {
+  if (isBuiltinSource(source.name)) {
+    throw new Error(`Cannot replace built-in source "${source.name}"`);
+  }
   const existing = sources.findIndex((s) => s.name === source.name);
   if (existing >= 0) {
     sources[existing] = source;

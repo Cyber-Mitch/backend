@@ -31,23 +31,23 @@ onRotation((notification) => {
 router.post("/", (req: Request, res: Response, next: NextFunction) => {
   try {
     const { consumer_name, rate_limit, rotation_interval_days } = req.body;
-    if (!consumer_name || typeof consumer_name !== "string") {
-      throw badRequest("consumer_name is required and must be a string");
+    if (!consumer_name || typeof consumer_name !== "string" || consumer_name.trim().length === 0 || consumer_name.length > 128) {
+      throw badRequest("consumer_name is required and must be a string up to 128 characters");
     }
 
     let parsedRateLimit: number | undefined;
     if (rate_limit !== undefined) {
       parsedRateLimit = Number(rate_limit);
-      if (!Number.isInteger(parsedRateLimit) || parsedRateLimit <= 0) {
-        throw badRequest("rate_limit must be a positive integer");
+      if (!Number.isInteger(parsedRateLimit) || parsedRateLimit <= 0 || parsedRateLimit > 1_000_000) {
+        throw badRequest("rate_limit must be a positive integer up to 1000000");
       }
     }
 
     let parsedRotationInterval: number | undefined;
     if (rotation_interval_days !== undefined) {
       parsedRotationInterval = Number(rotation_interval_days);
-      if (!Number.isInteger(parsedRotationInterval) || parsedRotationInterval <= 0) {
-        throw badRequest("rotation_interval_days must be a positive integer");
+      if (!Number.isInteger(parsedRotationInterval) || parsedRotationInterval <= 0 || parsedRotationInterval > 3650) {
+        throw badRequest("rotation_interval_days must be a positive integer up to 3650");
       }
     }
 
@@ -100,13 +100,15 @@ router.post("/:id/rotate", (req: Request, res: Response, next: NextFunction) => 
   try {
     const id = String(req.params.id);
     const body = req.body || {};
-    const grace_period_ms = body.grace_period_ms ? Number(body.grace_period_ms) : undefined;
+    let grace_period_ms: number | undefined = undefined;
 
-    if (
-      grace_period_ms !== undefined &&
-      (grace_period_ms < 0 || !Number.isFinite(grace_period_ms))
-    ) {
-      throw badRequest("grace_period_ms must be a non-negative number");
+    if (body.grace_period_ms !== undefined) {
+      const parsed = Number(body.grace_period_ms);
+      const MAX_GRACE_MS = 30 * 24 * 60 * 60 * 1000; // 30 days
+      if (!Number.isInteger(parsed) || parsed < 0 || parsed > MAX_GRACE_MS) {
+        throw badRequest(`grace_period_ms must be an integer between 0 and ${MAX_GRACE_MS} (30 days)`);
+      }
+      grace_period_ms = parsed;
     }
 
     const rotated = rotateApiKey(id, grace_period_ms);
