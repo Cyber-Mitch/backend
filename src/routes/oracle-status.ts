@@ -1,6 +1,7 @@
 import { Router, Request, Response, NextFunction } from "express";
 import { register } from "../lib/prometheus";
 import { logger } from "../lib/logger";
+import { getTotalProjects } from "../lib/stellar/project-registry";
 
 const router = Router();
 
@@ -14,12 +15,35 @@ interface OracleStatus {
     stale_projects: number;
     total_projects: number;
   };
+  submission_success_rate: number | null;
   submission_success_rate_7d: number | null;
   submit_latency: {
     p50_seconds: number | null;
     p95_seconds: number | null;
     p99_seconds: number | null;
   };
+}
+
+function percentileFromBuckets(buckets: { le: number; count: number }[], q: number): number | null {
+  if (buckets.length === 0) return null;
+  const leMap = new Map<number, number>();
+  for (const b of buckets) {
+    leMap.set(b.le, (leMap.get(b.le) ?? 0) + b.count);
+  }
+  const sorted = Array.from(leMap.entries())
+    .map(([le, count]) => ({ le, count }))
+    .sort((a, b) => a.le - b.le);
+
+  const total = sorted.find((b) => b.le === Infinity)?.count ?? sorted[sorted.length - 1]?.count ?? 0;
+  if (total === 0) return null;
+
+  const target = q * total;
+  for (const b of sorted) {
+    if (b.count >= target && Number.isFinite(b.le)) {
+      return b.le;
+    }
+  }
+  return sorted.filter((b) => Number.isFinite(b.le)).pop()?.le ?? null;
 }
 
 /**
@@ -39,7 +63,7 @@ router.get("/", async (req: Request, res: Response, next: NextFunction) => {
     const scoreAges: number[] = [];
     let successCount = 0;
     let failureCount = 0;
-    const submitLatencies: number[] = [];
+    const buckets: { le: number; count: number }[] = [];
 
     for (const line of lines) {
       if (line.startsWith("#") || line.trim() === "") continue;
@@ -69,6 +93,17 @@ router.get("/", async (req: Request, res: Response, next: NextFunction) => {
       if (line.includes('stellar_tx_submissions_total{result="failure"}')) {
         failureCount = parseFloat(line.split(" ")[1]) || 0;
       }
+
+      // Parse submission latency histogram buckets
+      if (line.startsWith("oracle_submit_to_confirm_latency_seconds_bucket{")) {
+        const leMatch = line.match(/le="([^"]+)"/);
+        const parts = line.split(" ");
+        const countVal = parseFloat(parts[parts.length - 1]);
+        if (leMatch && !isNaN(countVal)) {
+          const le = leMatch[1] === "+Inf" ? Infinity : parseFloat(leMatch[1]);
+          buckets.push({ le, count: countVal });
+        }
+      }
     }
 
     // Calculate percentiles for score ages
@@ -80,12 +115,17 @@ router.get("/", async (req: Request, res: Response, next: NextFunction) => {
     // Count stale projects (>2 hours)
     const staleProjects = scoreAges.filter((age) => age > 7200).length;
 
-    // Calculate 7-day success rate (using current counters as proxy)
+    // Calculate success rate
     const totalSubmissions = successCount + failureCount;
     const successRate = totalSubmissions > 0 ? successCount / totalSubmissions : null;
 
-    // For latency percentiles, we'd need to query histogram buckets
-    // For now, return null (would require more complex parsing)
+    // Calculate latency percentiles from histogram buckets
+    const p50Latency = percentileFromBuckets(buckets, 0.5);
+    const p95Latency = percentileFromBuckets(buckets, 0.95);
+    const p99Latency = percentileFromBuckets(buckets, 0.99);
+
+    const totalProjects = await getTotalProjects();
+
     const status: OracleStatus = {
       signer_balance_xlm: signerBalance,
       registry_paused: registryPaused,
@@ -94,13 +134,14 @@ router.get("/", async (req: Request, res: Response, next: NextFunction) => {
         p95_age_seconds: p95Age,
         p99_age_seconds: p99Age,
         stale_projects: staleProjects,
-        total_projects: scoreAges.length,
+        total_projects: totalProjects,
       },
+      submission_success_rate: successRate,
       submission_success_rate_7d: successRate,
       submit_latency: {
-        p50_seconds: null,
-        p95_seconds: null,
-        p99_seconds: null,
+        p50_seconds: p50Latency,
+        p95_seconds: p95Latency,
+        p99_seconds: p99Latency,
       },
     };
 

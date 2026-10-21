@@ -24,6 +24,31 @@ const satelliteProviders: SatelliteDataProvider[] = [
   new SimulatorSatelliteProvider(), // Only simulator for now (Sentinel-2 can be added)
 ];
 
+const credentialsStore = new Map<number, ProjectCredentials>();
+
+export function setProjectCredentials(projectId: number, creds: ProjectCredentials): void {
+  credentialsStore.set(projectId, creds);
+}
+
+export function getProjectCredentials(projectId: number): ProjectCredentials | undefined {
+  if (credentialsStore.has(projectId)) {
+    return credentialsStore.get(projectId);
+  }
+  const envKey = process.env[`SOLAR_API_KEY_${projectId}`] || process.env.SOLAR_API_KEY;
+  if (envKey) {
+    return {
+      project_id: projectId,
+      api_key: envKey,
+      metadata: { site_id: process.env[`SOLAR_SITE_ID_${projectId}`] || process.env.SOLAR_SITE_ID || String(projectId) },
+    };
+  }
+  return undefined;
+}
+
+export function clearProjectCredentials(): void {
+  credentialsStore.clear();
+}
+
 const healthMap = new Map<string, ProviderHealth>();
 
 function markHealthy(name: string): void {
