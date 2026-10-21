@@ -27,6 +27,7 @@ interface PortfolioResponse {
   total_deposited: string;
   total_deposited_display: string;
   events: PortfolioEvent[];
+  next_cursor?: string | null;
 }
 
 router.get("/:address", async (req: Request, res: Response, next: NextFunction) => {
@@ -39,14 +40,41 @@ router.get("/:address", async (req: Request, res: Response, next: NextFunction) 
     throw badRequest(err instanceof Error ? err.message : String(err));
   }
 
+  const cursorRaw = req.query.cursor;
+  if (cursorRaw !== undefined && typeof cursorRaw !== "string") {
+    throw badRequest("cursor must be a string");
+  }
+  const cursor = typeof cursorRaw === "string" && cursorRaw.trim() ? cursorRaw.trim() : null;
+
+  const limitRaw = req.query.limit;
+  let limit = 20;
+  if (limitRaw !== undefined) {
+    const parsed = Number(limitRaw);
+    if (!Number.isInteger(parsed) || parsed < 1 || parsed > 200) {
+      throw badRequest("limit must be an integer between 1 and 200");
+    }
+    limit = parsed;
+  }
+
   try {
     // Fetch portfolio data from the vault contract
     const portfolio = await getPortfolio(address);
 
     // Fetch historical events from the indexer
     const events = indexer.getEventsByAddress(address);
+    const sorted = events.slice().sort((a, b) => b.timestamp - a.timestamp);
+    let startIndex = 0;
+    if (cursor) {
+      const foundIdx = sorted.findIndex((e) => e.id === cursor || e.txHash === cursor);
+      if (foundIdx >= 0) {
+        startIndex = foundIdx + 1;
+      }
+    }
+    const paged = sorted.slice(startIndex, startIndex + limit);
+    const hasMore = startIndex + paged.length < sorted.length;
+    const nextCursor = hasMore && paged.length > 0 ? paged[paged.length - 1].id : null;
 
-    const processedEvents: PortfolioEvent[] = events.map((event) => ({
+    const processedEvents: PortfolioEvent[] = paged.map((event) => ({
       id: event.id,
       type: event.type,
       amount: event.amount,
@@ -66,7 +94,8 @@ router.get("/:address", async (req: Request, res: Response, next: NextFunction) 
       share_of_pool_bps: portfolio.share_of_pool_bps,
       total_deposited: portfolio.total_deposited,
       total_deposited_display: i128ToDecimal(portfolio.total_deposited, 7),
-      events: processedEvents.sort((a, b) => b.timestamp - a.timestamp),
+      events: processedEvents,
+      next_cursor: nextCursor,
     };
 
     res.json(response);

@@ -8,6 +8,7 @@ import {
   unsubscribe,
   NotificationEventType,
 } from "../lib/notifications";
+import { validateStellarAddress } from "../lib/vault";
 
 const router = Router();
 
@@ -24,8 +25,12 @@ function requireAddressOwner(req: Request, res: Response, next: NextFunction): v
 }
 
 function address(req: Request): string {
-  const a = String(req.params.address);
-  if (!ADDRESS_RE.test(a)) throw badRequest("address must be a valid Stellar address");
+  const a = String(req.params.address).trim();
+  try {
+    validateStellarAddress(a);
+  } catch (err) {
+    throw badRequest(err instanceof Error ? err.message : "address must be a valid Stellar address");
+  }
   return a;
 }
 

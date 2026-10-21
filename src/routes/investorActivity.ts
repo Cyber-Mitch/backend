@@ -1,6 +1,7 @@
 import { Router, Request, Response, NextFunction } from "express";
 import { badRequest } from "../middleware/errors";
 import { indexer } from "../lib/indexer";
+import { validateStellarAddress } from "../lib/vault";
 
 const DEFAULT_ACTIVITY_LIMIT = 50;
 const MAX_ACTIVITY_LIMIT = 200;
@@ -11,8 +12,11 @@ const router = Router();
 router.get("/:address/activity", async (req: Request, res: Response, next: NextFunction) => {
   try {
     const address = String(req.params.address).trim();
-    if (!address || address.length > 128)
-      throw badRequest("address must be a non-empty wallet address");
+    try {
+      validateStellarAddress(address);
+    } catch (err) {
+      throw badRequest(err instanceof Error ? err.message : String(err));
+    }
 
     const cursorRaw = req.query.cursor;
     if (cursorRaw !== undefined && typeof cursorRaw !== "string") {
@@ -47,8 +51,11 @@ router.get(
   async (req: Request, res: Response, next: NextFunction) => {
     try {
       const address = String(req.params.address).trim();
-      if (!address || address.length > 128)
-        throw badRequest("address must be a non-empty wallet address");
+      try {
+        validateStellarAddress(address);
+      } catch (err) {
+        throw badRequest(err instanceof Error ? err.message : String(err));
+      }
 
       const pending = await indexer.getPendingWithdrawals(address);
       res.json({ address, pending_withdrawals: pending });
