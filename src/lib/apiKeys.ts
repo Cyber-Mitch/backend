@@ -82,10 +82,13 @@ export function rotateApiKey(id: string, gracePeriodMs?: number): ApiKey | null 
   const newKey = `hk_live_${crypto.randomBytes(24).toString("hex")}`;
   const now = Date.now();
 
-  // Store old key for grace period if specified
+  // Store old key for grace period if specified, otherwise clear old keys (#876)
   if (gracePeriodMs && gracePeriodMs > 0) {
     apiKey.old_key = apiKey.key;
     apiKey.new_key_expires_at = now + gracePeriodMs;
+  } else {
+    delete apiKey.old_key;
+    delete apiKey.new_key_expires_at;
   }
 
   apiKey.key = newKey;
@@ -116,8 +119,17 @@ export function revokeApiKey(id: string): boolean {
   return true;
 }
 
+function maskKey(key: string): string {
+  if (!key || key.length <= 8) return "***";
+  return `${key.slice(0, 8)}...${key.slice(-4)}`;
+}
+
 export function listApiKeys(): ApiKey[] {
-  return Array.from(keysStore.values());
+  return Array.from(keysStore.values()).map((k) => ({
+    ...k,
+    key: maskKey(k.key),
+    old_key: k.old_key ? maskKey(k.old_key) : undefined,
+  }));
 }
 
 export function getApiKeyDetails(id: string): ApiKey | null {
@@ -226,7 +238,7 @@ export function checkScheduledRotations(): ApiKey[] {
     if (apiKey.status !== "active") continue;
     if (!apiKey.next_rotation_at) continue;
     if (now >= apiKey.next_rotation_at) {
-      const result = rotateApiKey(apiKey.id);
+      const result = rotateApiKey(apiKey.id, 24 * 60 * 60 * 1000);
       if (result) {
         rotated.push(result);
       }
