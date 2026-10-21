@@ -64,6 +64,7 @@ const records = new Map<string, Record_>();
 const byUnsubscribeToken = new Map<string, string>();
 const byConfirmToken = new Map<string, string>();
 const delivered = new Set<string>();
+const MAX_DELIVERED = 10_000;
 
 // Domain labels exclude "." so the pattern is unambiguous (no polynomial backtracking).
 const EMAIL_RE = /^[^\s@]+@[^\s@.]+(?:\.[^\s@.]+)+$/;
@@ -150,22 +151,38 @@ export async function updatePreferences(
 
   let confirmationSent = false;
   if (input.email !== undefined && input.email !== r.email) {
+    const prevEmail = r.email;
+    const prevVerified = r.email_verified;
+    const prevConfirmToken = r.confirm_token;
     if (r.confirm_token) byConfirmToken.delete(r.confirm_token);
-    r.email = input.email;
-    r.email_verified = false;
-    r.confirm_token = null;
-    if (input.email) {
-      r.confirm_token = token();
-      byConfirmToken.set(r.confirm_token, address);
-      await sendEmail({
-        to: input.email,
-        subject: "Confirm your Heliobond notifications",
-        body:
-          `Confirm you want Heliobond notifications for ${address}:\n` +
-          `${baseUrl()}/v1/notifications/confirm?token=${r.confirm_token}\n\n` +
-          `If this wasn't you, ignore this message.`,
-      });
-      confirmationSent = true;
+    const nextToken = input.email ? token() : null;
+    if (nextToken && input.email) {
+      byConfirmToken.set(nextToken, address);
+      try {
+        await sendEmail({
+          to: input.email,
+          subject: "Confirm your Heliobond notifications",
+          body:
+            `Confirm you want Heliobond notifications for ${address}:\n` +
+            `${baseUrl()}/v1/notifications/confirm?token=${nextToken}\n\n` +
+            `If this wasn't you, ignore this message.`,
+        });
+        r.email = input.email;
+        r.email_verified = false;
+        r.confirm_token = nextToken;
+        confirmationSent = true;
+      } catch (err) {
+        byConfirmToken.delete(nextToken);
+        if (prevConfirmToken) byConfirmToken.set(prevConfirmToken, address);
+        r.email = prevEmail;
+        r.email_verified = prevVerified;
+        r.confirm_token = prevConfirmToken;
+        throw err;
+      }
+    } else {
+      r.email = null;
+      r.email_verified = false;
+      r.confirm_token = null;
     }
   }
   if (webhookUrl !== undefined) {
@@ -267,6 +284,10 @@ function wants(r: Record_, e: NotificationEvent): boolean {
 function firstDelivery(e: NotificationEvent, channel: string, address: string): boolean {
   const key = `${e.type}:${e.id}:${channel}:${address}`;
   if (delivered.has(key)) return false;
+  if (delivered.size >= MAX_DELIVERED) {
+    const first = delivered.values().next().value;
+    if (first !== undefined) delivered.delete(first);
+  }
   delivered.add(key);
   return true;
 }
